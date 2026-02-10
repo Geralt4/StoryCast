@@ -1,0 +1,119 @@
+FUTURE FIXES - VERSION 1.1 TRACKING
+====================================
+
+Last Updated: January 30, 2026
+Current Version: 1.0 (Build 1)
+
+COMPLETED (Version 1.0):
+-----------------------
+✅ Removed 72 debug print() statements from AudioPlayerService.swift (wrapped in #if DEBUG)
+✅ Fixed CoverArtCache.swift - replaced dictionary with NSCache with automatic memory pressure eviction
+
+PENDING FOR VERSION 1.1:
+========================
+
+HIGH PRIORITY:
+--------------
+
+[ ] 1. Localization Setup
+    File: Multiple (LibraryView, ImportErrorType, PlayerView, ContentView, etc.)
+    Description: Extract all hardcoded English strings to Localizable.strings
+    Reason: Enable future translations, Apple best practice
+    Estimate: 2-3 hours
+    Status: Not Started
+
+MEDIUM PRIORITY:
+----------------
+
+[ ] 2. Code Organization - Support Email
+    File: SettingsView.swift (Line 144) and Constants.swift
+    Description: Move hardcoded "johnmanologlou@gmail.com" to AppConstants enum
+    Reason: Easier maintenance, single source of truth
+    Change:
+        // In Constants.swift
+        enum AppConstants {
+            static let supportEmail = "johnmanologlou@gmail.com"
+            static let appName = "VoiceBox"
+        }
+
+        // In SettingsView.swift
+        guard let url = URL(string: "mailto:\(AppConstants.supportEmail)?subject=...")
+    Estimate: 10 minutes
+    Status: Not Started
+
+[ ] 3. UI Performance - Replace AnyView
+    File: FolderDetailView.swift (Lines 70, 251)
+    Description: Replace AnyView type erasure with @ViewBuilder
+    Reason: Better SwiftUI view diffing performance
+    Current Code:
+        return AnyView(finalView)
+    Should Be:
+        @ViewBuilder
+        private var detailView: some View {
+            // chain views directly with if/else
+        }
+    Estimate: 30 minutes
+    Status: Not Started
+
+[ ] 4. Documentation Cleanup
+    File: SleepTimerView.swift (Lines 59-61, 120-122)
+    Description: Remove stale placeholder comments indicating incomplete work
+    Comments to Remove:
+        - "This would need to be passed in or accessed via Book context"
+        - "For now, we'll just show that this mode is available"
+        - "Placeholder functions - these would need actual implementation"
+    Reason: Cleaner codebase, confusing for maintainers
+    Estimate: 5 minutes
+    Status: Not Started
+
+LOW PRIORITY:
+-------------
+
+[ ] 5. Accessibility Labels
+    Files: ImportProgressOverlay.swift, various views
+    Description: Add missing accessibility labels to some interactive elements
+    Specific Items:
+        - Cancel button in ImportProgressOverlay.swift (Line 63)
+        - Some ProgressView instances
+    Reason: Better accessibility for VoiceOver users
+    Estimate: 30 minutes
+    Status: Not Started
+
+[ ] 6. Observer Cleanup Documentation
+    File: AudioPlayerService.swift (Line 807)
+    Description: Add more explicit documentation about singleton observer design
+    Reason: Future-proofing if architecture changes
+    Current Comment:
+        // Singleton lifecycle persists for app duration; no deinit cleanup needed.
+    Enhancement:
+        /// Note: Observers (interruptionObserver, routeChangeObserver, appLifecycleObservers)
+        /// are intentionally not removed since this is a singleton that lives for the
+        /// entire app lifecycle. If architecture changes to non-singleton, explicit
+        /// observer cleanup should be added in deinit.
+    Estimate: 10 minutes
+    Status: Not Started
+
+CONSIDERED BUT DEFERRED:
+------------------------
+
+- fatalError in VoiceBoxApp.swift (Line 28)
+  Decision: Keep as-is. Only triggers if SwiftData fails twice (disk + memory),
+  which essentially never happens. Adding error UI for this edge case is not
+  worth the complexity.
+
+- UserDefaults in PerformanceSignpost.swift (Line 12)
+  Decision: Issue misunderstood. UserDefaults() and UserDefaults.standard
+  return the same thing. No change needed.
+
+NOTES FOR FUTURE RELEASES:
+==========================
+
+Version 1.2 Ideas:
+- Add iCloud sync for playback progress
+- Add search functionality in library
+- Add custom themes
+
+Version 2.0 Ideas:
+- CarPlay support
+- Apple Watch companion app
+- Widget support for lock screen

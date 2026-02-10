@@ -1,0 +1,236 @@
+HAPTICS IMPLEMENTATION LOG
+========================
+
+This file documents all haptic feedback additions made to the VoiceBox app.
+Created: January 29, 2026
+Implementation Date: January 29, 2026
+Implementation Status: ✅ COMPLETE
+
+EXISTING HAPTICS (8 locations, already implemented):
+-
+- PlayerView.swift:134 - Progress slider start dragging - Selection feedback
+- PlayerView.swift:162 - Skip backward button - Light impact
+- PlayerView.swift:166 - Play/Pause button - Medium impact
+- PlayerView.swift:170 - Skip forward button - Light impact
+- SleepTimerView.swift:48 - Timer duration button - Success notification
+- SleepTimerView.swift:64 - End of chapter button - Success notification
+- SleepTimerView.swift:84 - Extend timer button - Light impact
+- SleepTimerView.swift:93 - Cancel timer button - Warning notification
+- SpeedPickerView.swift:14 - Speed selection button - Light impact
+
+---
+
+NEW HAPTICS ADDED (38 locations):
+
+LIBRARY ROWS & LIBRARY VIEW
+============================
+
+BookRowView.swift:
+- Line 34: onSelect context menu - Light impact
+- Line 37: onMove context menu - Light impact
+- Line 40: onDelete context menu - Heavy impact + Error notification
+
+FolderRowView.swift:
+- Line 15: onSelect button - Light impact
+- Line 44: onSelect context menu - Light impact
+- Line 48: onMove context menu - Light impact
+- Line 51: onRename context menu - Light impact
+- Line 54: onDelete context menu - Heavy impact + Error notification
+- Line 61: Swipe to rename - Light impact
+- Line 69: Swipe to delete - Heavy impact + Error notification
+
+LibraryView.swift:
+- Line 130: Settings button - Light impact
+- Line 139: Select/Done button - Light impact
+- Line 154: Import Files menu - Light impact
+- Line 159: New Folder menu - Light impact
+- Line 175: Select All button - Light impact
+- Line 181: Merge button - Light impact
+- Line 187: Delete button - Heavy impact + Warning notification
+- Line 245: Rename folder alert - Light impact + Success notification
+- Line 265: Delete folder alert - Heavy impact + Success notification
+
+FolderDetailView.swift:
+- Line 100: Select/Done button - Light impact
+- Line 113: Import button - Light impact
+- Line 125: Select All button - Light impact
+- Line 131: Move button - Light impact
+- Line 137: Delete button - Heavy impact + Warning notification
+
+SHEET VIEWS
+===========
+
+NewFolderSheet.swift:
+- Line 22: Create folder button - Medium impact + Success notification
+
+MoveToFolderSheet.swift:
+- Line 29: Folder selection (Unfiled) - Light impact
+- Line 53: Folder selection (User folder) - Light impact
+- Line 86: Move confirm button - Medium impact + Success notification
+
+FolderSelectionSheet.swift:
+- Line 21: Folder selection (Unfiled) - Light impact
+- Line 39: Folder selection (User folder) - Light impact
+- Line 66: Import confirm button - Medium impact + Success notification
+
+MergeFolderSheet.swift:
+- Line 20: Folder selection - Light impact
+- Line 47: Merge confirm button - Medium impact + Success notification
+
+BulkMoveToFolderSheet.swift:
+- Line 26: Folder selection (Unfiled) - Light impact
+- Line 50: Folder selection (User folder) - Light impact
+- Line 83: Move confirm button - Medium impact + Success notification
+
+BulkMoveFoldersSheet.swift:
+- Line 20: Folder selection - Light impact
+- Line 47: Merge confirm button - Medium impact + Success notification
+
+BulkDeleteConfirmationSheet.swift:
+- Line 36: Delete confirm - Heavy impact + Success notification
+
+BulkDeleteFoldersConfirmationSheet.swift:
+- Line 35: Delete confirm - Heavy impact + Success notification
+
+PLAYER VIEWS
+============
+
+ChapterListView.swift:
+- Line 28: Chapter selection button - Medium impact + Success notification
+
+SETTINGS
+========
+
+SettingsView.swift:
+- Line 20: Skip Forward slider - Selection feedback
+- Line 33: Skip Backward slider - Selection feedback
+- Line 46: Default Speed slider - Selection feedback
+- Line 53: Auto-play toggle - Light impact
+
+---
+
+SUMMARY
+=======
+
+Total Haptics Added: 38
+- Light Impact: 24
+- Medium Impact: 8
+- Heavy Impact: 4
+- Success Notification: 8
+- Warning Notification: 2
+- Error Notification: 2
+- Selection Feedback: 3
+
+Total Haptics in App (including existing): 46
+
+---
+
+HAPTIC STRENGTH GUIDE
+=====================
+
+Light Impact:
+- Selections, toggles, minor actions
+- Menu items, context menu items
+- Folder/book selection
+
+Medium Impact:
+- Primary actions (create, confirm, move)
+- Opening views, confirming operations
+
+Heavy Impact:
+- Destructive actions
+- Delete confirmations
+- Major irreversible changes
+
+Success Notification:
+- Successful completion of operations
+- Confirmed actions
+- Successful saves
+
+Warning Notification:
+- Cancellation of operations
+- Stopping actions
+- Delete button presses (before confirmation)
+
+Error Notification:
+- Destructive delete actions (after confirmation)
+- Failed operations
+
+Selection Feedback:
+- Slider interactions
+- Adjusting values
+- Precision controls
+
+---
+
+TESTING RECOMMENDATIONS
+======================
+
+1. Test with VoiceOver enabled - ensure haptics don't interfere with speech
+2. Test on different iPhone models (haptic strength varies by device)
+3. Test with "Reduce Haptic Feedback" setting enabled
+4. Observe for haptic fatigue during extended use (especially bulk operations)
+
+---
+
+HOW TO ADJUST HAPTICS
+=====================
+
+If you find certain haptics too strong or too weak, you can adjust them:
+
+1. Locate the file and line number from this log
+2. Find the HapticManager call
+3. Change the haptic type:
+   - `.light` → medium or heavy for stronger
+   - `.medium` → light or heavy for weaker/stronger
+   - `.heavy` → light or medium for weaker
+   - `.notification(.success/.warning/.error)` → remove or change type
+
+Examples:
+```swift
+HapticManager.impact(.light)        // Lightest tap feedback
+HapticManager.impact(.medium)       // Medium tap feedback
+HapticManager.impact(.heavy)        // Strong tap feedback
+HapticManager.selection()           // For sliders and adjustments
+HapticManager.notification(.success)  // Success completion
+HapticManager.notification(.warning)  // Warning/cancellation
+HapticManager.notification(.error)    // Error/destructive action
+```
+
+To remove a haptic:
+```swift
+// Before:
+Button(action: {
+    HapticManager.impact(.light)
+    doSomething()
+})
+
+// After:
+Button(action: {
+    doSomething()
+})
+```
+
+---
+
+FILES MODIFIED
+==============
+
+Modified Files (12):
+1. BookRowView.swift
+2. FolderRowView.swift
+3. LibraryView.swift
+4. FolderDetailView.swift
+5. NewFolderSheet.swift
+6. MoveToFolderSheet.swift
+7. FolderSelectionSheet.swift
+8. MergeFolderSheet.swift
+9. BulkMoveToFolderSheet.swift
+10. BulkMoveFoldersSheet.swift
+11. BulkDeleteConfirmationSheet.swift
+12. BulkDeleteFoldersConfirmationSheet.swift
+13. ChapterListView.swift
+14. SettingsView.swift
+
+New Files Created (1):
+- haptics.txt (this file)
