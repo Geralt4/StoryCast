@@ -140,7 +140,7 @@ struct SettingsView: View {
     }
 
     private func openSupportEmail() {
-        guard let url = URL(string: "mailto:johnmanologlou@gmail.com?subject=VoiceBox%20-%20Support&body=\(emailBody())") else {
+        guard let url = URL(string: "mailto:johnmanologlou@gmail.com?subject=StoryCast%20-%20Support&body=\(emailBody())") else {
             return
         }
         UIApplication.shared.open(url)

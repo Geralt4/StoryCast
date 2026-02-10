@@ -79,7 +79,7 @@ struct ContentView: View {
     }
 
     private func scanAndImportExistingFiles(container: ModelContainer) async {
-        let voiceBoxLibraryPath = StorageManager.shared.voiceBoxLibraryURL.path
+        let storyCastLibraryPath = StorageManager.shared.storyCastLibraryURL.path
 
         // Fetch the Unfiled folder (guaranteed to exist from ensureUnfiledFolderExists)
         let context = ModelContext(container)
@@ -91,14 +91,14 @@ struct ContentView: View {
         let descriptor = FetchDescriptor<Book>()
         guard let books = try? context.fetch(descriptor) else { return }
 
-        let libraryURL = StorageManager.shared.voiceBoxLibraryURL
+        let libraryURL = StorageManager.shared.storyCastLibraryURL
         let existingFileNames = Set(books.compactMap { book in
             let localFileURL = libraryURL.appendingPathComponent(book.localFileName)
             return FileManager.default.fileExists(atPath: localFileURL.path) ? book.localFileName : nil
         })
 
         guard let enumerator = FileManager.default.enumerator(
-            at: URL(fileURLWithPath: voiceBoxLibraryPath),
+            at: URL(fileURLWithPath: storyCastLibraryPath),
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else { return }
@@ -154,7 +154,7 @@ struct ContentView: View {
                     return .success(staleRemovedCount: 0, reassignedToUnfiledCount: 0, coverArtFileNames: [], createdUnfiledFolder: unfiledCreated)
                 }
 
-                let libraryURL = StorageManager.shared.voiceBoxLibraryURL
+                let libraryURL = StorageManager.shared.storyCastLibraryURL
                 var coverArtFileNamesToDelete = Set<String>()
                 var booksToDelete: [Book] = []
                 var reassignedToUnfiledCount = 0
@@ -247,7 +247,7 @@ struct ContentView: View {
                     return lhs.id.uuidString > rhs.id.uuidString
                 }
 
-                let libraryURL = StorageManager.shared.voiceBoxLibraryURL
+                let libraryURL = StorageManager.shared.storyCastLibraryURL
                 var localFileNamesToDelete = Set<String>()
                 var coverArtFileNamesToDelete = Set<String>()
                 var booksToDelete: [Book] = []
@@ -340,7 +340,7 @@ struct ContentView: View {
                 return true
             }
 
-            let libraryURL = StorageManager.shared.voiceBoxLibraryURL
+            let libraryURL = StorageManager.shared.storyCastLibraryURL
             for fileName in localFileNames {
                 let fileURL = libraryURL.appendingPathComponent(fileName)
                 await Task.detached(priority: .utility) {
@@ -383,7 +383,7 @@ struct ContentView: View {
 
         async let storageTask: Void = Task.detached(priority: .utility) {
             do {
-                    try await StorageManager.shared.setupVoiceBoxLibraryDirectory()
+                    try await StorageManager.shared.setupStoryCastLibraryDirectory()
                     try await StorageManager.shared.setupCoverArtDirectory()
                     try await StorageManager.shared.migrateFileProtectionIfNeeded()
                 } catch {

@@ -1,7 +1,7 @@
 HAPTICS IMPLEMENTATION LOG
 ========================
 
-This file documents all haptic feedback additions made to the VoiceBox app.
+This file documents all haptic feedback additions made to the StoryCast app.
 Created: January 29, 2026
 Implementation Date: January 29, 2026
 Implementation Status: ✅ COMPLETE

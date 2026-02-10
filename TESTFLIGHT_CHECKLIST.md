@@ -1,6 +1,6 @@
 # TestFlight Pre-Submission Checklist
 
-This checklist ensures all requirements are met before submitting the VoiceBox app to TestFlight/App Store Connect.
+This checklist ensures all requirements are met before submitting the StoryCast app to TestFlight/App Store Connect.
 
 ---
 
@@ -8,7 +8,7 @@ This checklist ensures all requirements are met before submitting the VoiceBox a
 
 ### Application Details
 
-- [ ] App Name: `VoiceBox`
+- [ ] App Name: `StoryCast`
 - [ ] Subtitle: Brief description (max 30 characters)
 - [ ] Primary Category: Books
 - [ ] Secondary Category: Entertainment
@@ -23,7 +23,7 @@ This checklist ensures all requirements are met before submitting the VoiceBox a
 Recommended description (adjust as needed):
 
 ```
-VoiceBox is your dedicated audiobook listening companion, designed with performance and ease of use in mind.
+StoryCast is your dedicated audiobook listening companion, designed with performance and ease of use in mind.
 
 KEY FEATURES:
 • Import audiobooks from Files app, cloud services, or share sheets
@@ -99,7 +99,7 @@ Import your audiobooks and enjoy seamless playback with a beautiful, intuitive i
 
 ### Assets.xcassets Verification
 
-Location: `VoiceBox/Assets.xcassets/AppIcon.appiconset/Contents.json`
+Location: `StoryCast/Assets.xcassets/AppIcon.appiconset/Contents.json`
 
 Current configuration:
 ```json
@@ -158,7 +158,7 @@ Current configuration:
 
 To verify icon files exist:
 ```bash
-ls -la VoiceBox/Assets.xcassets/AppIcon.appiconset/
+ls -la StoryCast/Assets.xcassets/AppIcon.appiconset/
 ```
 
 Expected: `Contents.json` and PNG image files for the 1024x1024 icon sizes.
@@ -169,7 +169,7 @@ Expected: `Contents.json` and PNG image files for the 1024x1024 icon sizes.
 
 ### Current Version Information
 
-Xcode project: `VoiceBox.xcodeproj`
+Xcode project: `StoryCast.xcodeproj`
 
 Required version fields:
 
@@ -195,7 +195,7 @@ Build number (CFBundleVersion):
 
 1. Open Xcode project:
    ```bash
-   open VoiceBox.xcodeproj
+   open StoryCast.xcodeproj
    ```
 
 2. Select project in navigator → Select target → General tab
@@ -230,7 +230,7 @@ Build number (CFBundleVersion):
 
 Apple requires disclosure of encryption usage in your app, even for App Store distribution.
 
-For VoiceBox:
+For StoryCast:
 
 Since the app uses:
 - No encryption for data at rest (audiobooks stored in plaintext)

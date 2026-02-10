@@ -1,7 +1,7 @@
 import XCTest
-@testable import VoiceBox
+@testable import StoryCast
 
-final class VoiceBoxTests: XCTestCase {
+final class StoryCastTests: XCTestCase {
 
     // MARK: - PlaybackSettings Tests
 

@@ -16,9 +16,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "528C009E2F08892000A6E0F7"
-               BuildableName = "VoiceBox.app"
-               BlueprintName = "VoiceBox"
-               ReferencedContainer = "container:VoiceBox.xcodeproj">
+               BuildableName = "StoryCast.app"
+               BlueprintName = "StoryCast"
+               ReferencedContainer = "container:StoryCast.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -36,9 +36,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "528C00AD2F08892100A6E0F7"
-               BuildableName = "VoiceBoxTests.xctest"
-               BlueprintName = "VoiceBoxTests"
-               ReferencedContainer = "container:VoiceBox.xcodeproj">
+               BuildableName = "StoryCastTests.xctest"
+               BlueprintName = "StoryCastTests"
+               ReferencedContainer = "container:StoryCast.xcodeproj">
             </BuildableReference>
          </TestableReference>
          <TestableReference
@@ -47,9 +47,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "528C00B72F08892100A6E0F7"
-               BuildableName = "VoiceBoxUITests.xctest"
-               BlueprintName = "VoiceBoxUITests"
-               ReferencedContainer = "container:VoiceBox.xcodeproj">
+               BuildableName = "StoryCastUITests.xctest"
+               BlueprintName = "StoryCastUITests"
+               ReferencedContainer = "container:StoryCast.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -69,9 +69,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "528C009E2F08892000A6E0F7"
-            BuildableName = "VoiceBox.app"
-            BlueprintName = "VoiceBox"
-            ReferencedContainer = "container:VoiceBox.xcodeproj">
+            BuildableName = "StoryCast.app"
+            BlueprintName = "StoryCast"
+            ReferencedContainer = "container:StoryCast.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -86,9 +86,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "528C009E2F08892000A6E0F7"
-            BuildableName = "VoiceBox.app"
-            BlueprintName = "VoiceBox"
-            ReferencedContainer = "container:VoiceBox.xcodeproj">
+            BuildableName = "StoryCast.app"
+            BlueprintName = "StoryCast"
+            ReferencedContainer = "container:StoryCast.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

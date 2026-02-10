@@ -33,7 +33,7 @@ MEDIUM PRIORITY:
         // In Constants.swift
         enum AppConstants {
             static let supportEmail = "johnmanologlou@gmail.com"
-            static let appName = "VoiceBox"
+            static let appName = "StoryCast"
         }
 
         // In SettingsView.swift
@@ -96,7 +96,7 @@ LOW PRIORITY:
 CONSIDERED BUT DEFERRED:
 ------------------------
 
-- fatalError in VoiceBoxApp.swift (Line 28)
+- fatalError in StoryCastApp.swift (Line 28)
   Decision: Keep as-is. Only triggers if SwiftData fails twice (disk + memory),
   which essentially never happens. Adding error UI for this edge case is not
   worth the complexity.

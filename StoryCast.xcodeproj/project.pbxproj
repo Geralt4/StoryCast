@@ -16,38 +16,38 @@
 			containerPortal = 528C00972F08892000A6E0F7 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 528C009E2F08892000A6E0F7;
-			remoteInfo = "VoiceBox";
+			remoteInfo = "StoryCast";
 		};
 		528C00B92F08892100A6E0F7 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 528C00972F08892000A6E0F7 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 528C009E2F08892000A6E0F7;
-			remoteInfo = "VoiceBox";
+			remoteInfo = "StoryCast";
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		528C009F2F08892000A6E0F7 /* VoiceBox.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoiceBox.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		528C00AE2F08892100A6E0F7 /* VoiceBoxTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "VoiceBoxTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		528C00B82F08892100A6E0F7 /* VoiceBoxUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "VoiceBoxUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		528C009F2F08892000A6E0F7 /* StoryCast.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StoryCast.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		528C00AE2F08892100A6E0F7 /* StoryCastTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "StoryCastTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		528C00B82F08892100A6E0F7 /* StoryCastUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "StoryCastUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		52A1B2C42F0A1B2C0031E0F7 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		528C00A12F08892000A6E0F7 /* VoiceBox */ = {
+		528C00A12F08892000A6E0F7 /* StoryCast */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "VoiceBox";
+			path = "StoryCast";
 			sourceTree = "<group>";
 		};
-		528C00B12F08892100A6E0F7 /* VoiceBoxTests */ = {
+		528C00B12F08892100A6E0F7 /* StoryCastTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "VoiceBoxTests";
+			path = "StoryCastTests";
 			sourceTree = "<group>";
 		};
-		528C00BB2F08892100A6E0F7 /* VoiceBoxUITests */ = {
+		528C00BB2F08892100A6E0F7 /* StoryCastUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "VoiceBoxUITests";
+			path = "StoryCastUITests";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -81,9 +81,9 @@
 		528C00962F08892000A6E0F7 = {
 			isa = PBXGroup;
 			children = (
-				528C00A12F08892000A6E0F7 /* VoiceBox */,
-				528C00B12F08892100A6E0F7 /* VoiceBoxTests */,
-				528C00BB2F08892100A6E0F7 /* VoiceBoxUITests */,
+				528C00A12F08892000A6E0F7 /* StoryCast */,
+				528C00B12F08892100A6E0F7 /* StoryCastTests */,
+				528C00BB2F08892100A6E0F7 /* StoryCastUITests */,
 				528C00A02F08892000A6E0F7 /* Products */,
 				52A1B2C52F0A1B2C0031E0F7 /* Frameworks */,
 			);
@@ -92,9 +92,9 @@
 		528C00A02F08892000A6E0F7 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				528C009F2F08892000A6E0F7 /* VoiceBox.app */,
-				528C00AE2F08892100A6E0F7 /* VoiceBoxTests.xctest */,
-				528C00B82F08892100A6E0F7 /* VoiceBoxUITests.xctest */,
+				528C009F2F08892000A6E0F7 /* StoryCast.app */,
+				528C00AE2F08892100A6E0F7 /* StoryCastTests.xctest */,
+				528C00B82F08892100A6E0F7 /* StoryCastUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -110,9 +110,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		528C009E2F08892000A6E0F7 /* VoiceBox */ = {
+		528C009E2F08892000A6E0F7 /* StoryCast */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 528C00C22F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "VoiceBox" */;
+			buildConfigurationList = 528C00C22F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "StoryCast" */;
 			buildPhases = (
 				528C009B2F08892000A6E0F7 /* Sources */,
 				528C009C2F08892000A6E0F7 /* Frameworks */,
@@ -123,18 +123,18 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				528C00A12F08892000A6E0F7 /* VoiceBox */,
+				528C00A12F08892000A6E0F7 /* StoryCast */,
 			);
-			name = VoiceBox;
+			name = StoryCast;
 			packageProductDependencies = (
 			);
-			productName = "VoiceBox";
-			productReference = 528C009F2F08892000A6E0F7 /* VoiceBox.app */;
+			productName = "StoryCast";
+			productReference = 528C009F2F08892000A6E0F7 /* StoryCast.app */;
 			productType = "com.apple.product-type.application";
 		};
-		528C00AD2F08892100A6E0F7 /* VoiceBoxTests */ = {
+		528C00AD2F08892100A6E0F7 /* StoryCastTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 528C00C52F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "VoiceBoxTests" */;
+			buildConfigurationList = 528C00C52F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "StoryCastTests" */;
 			buildPhases = (
 				528C00AA2F08892100A6E0F7 /* Sources */,
 				528C00AB2F08892100A6E0F7 /* Frameworks */,
@@ -146,18 +146,18 @@
 				528C00B02F08892100A6E0F7 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				528C00B12F08892100A6E0F7 /* VoiceBoxTests */,
+				528C00B12F08892100A6E0F7 /* StoryCastTests */,
 			);
-			name = "VoiceBoxTests";
+			name = "StoryCastTests";
 			packageProductDependencies = (
 			);
-			productName = "VoiceBoxTests";
-			productReference = 528C00AE2F08892100A6E0F7 /* VoiceBoxTests.xctest */;
+			productName = "StoryCastTests";
+			productReference = 528C00AE2F08892100A6E0F7 /* StoryCastTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		528C00B72F08892100A6E0F7 /* VoiceBoxUITests */ = {
+		528C00B72F08892100A6E0F7 /* StoryCastUITests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 528C00C82F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "VoiceBoxUITests" */;
+			buildConfigurationList = 528C00C82F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "StoryCastUITests" */;
 			buildPhases = (
 				528C00B42F08892100A6E0F7 /* Sources */,
 				528C00B52F08892100A6E0F7 /* Frameworks */,
@@ -169,13 +169,13 @@
 				528C00BA2F08892100A6E0F7 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				528C00BB2F08892100A6E0F7 /* VoiceBoxUITests */,
+				528C00BB2F08892100A6E0F7 /* StoryCastUITests */,
 			);
-			name = "VoiceBoxUITests";
+			name = "StoryCastUITests";
 			packageProductDependencies = (
 			);
-			productName = "VoiceBoxUITests";
-			productReference = 528C00B82F08892100A6E0F7 /* VoiceBoxUITests.xctest */;
+			productName = "StoryCastUITests";
+			productReference = 528C00B82F08892100A6E0F7 /* StoryCastUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
@@ -201,7 +201,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 528C009A2F08892000A6E0F7 /* Build configuration list for PBXProject "VoiceBox" */;
+			buildConfigurationList = 528C009A2F08892000A6E0F7 /* Build configuration list for PBXProject "StoryCast" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -215,9 +215,9 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				528C009E2F08892000A6E0F7 /* VoiceBox */,
-				528C00AD2F08892100A6E0F7 /* VoiceBoxTests */,
-				528C00B72F08892100A6E0F7 /* VoiceBoxUITests */,
+				528C009E2F08892000A6E0F7 /* StoryCast */,
+				528C00AD2F08892100A6E0F7 /* StoryCastTests */,
+				528C00B72F08892100A6E0F7 /* StoryCastUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -273,12 +273,12 @@
 /* Begin PBXTargetDependency section */
 		528C00B02F08892100A6E0F7 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 528C009E2F08892000A6E0F7 /* VoiceBox */;
+			target = 528C009E2F08892000A6E0F7 /* StoryCast */;
 			targetProxy = 528C00AF2F08892100A6E0F7 /* PBXContainerItemProxy */;
 		};
 		528C00BA2F08892100A6E0F7 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 528C009E2F08892000A6E0F7 /* VoiceBox */;
+			target = 528C009E2F08892000A6E0F7 /* StoryCast */;
 			targetProxy = 528C00B92F08892100A6E0F7 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -428,8 +428,8 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.VoiceBox;
-				PRODUCT_NAME = VoiceBox;
+				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.StoryCast;
+				PRODUCT_NAME = StoryCast;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -463,8 +463,8 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.VoiceBox;
-				PRODUCT_NAME = VoiceBox;
+				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.StoryCast;
+				PRODUCT_NAME = StoryCast;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
@@ -485,7 +485,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.VoiceBoxTests;
+				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.StoryCastTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -493,7 +493,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceBox.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/VoiceBox";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StoryCast.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/StoryCast";
 			};
 			name = Debug;
 		};
@@ -507,7 +507,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.VoiceBoxTests;
+				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.StoryCastTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -515,7 +515,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceBox.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/VoiceBox";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StoryCast.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/StoryCast";
 			};
 			name = Release;
 		};
@@ -527,7 +527,7 @@
 				DEVELOPMENT_TEAM = ZY5G2U9YN3;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.VoiceBoxUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.StoryCastUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -535,7 +535,7 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = VoiceBox;
+				TEST_TARGET_NAME = StoryCast;
 			};
 			name = Debug;
 		};
@@ -547,7 +547,7 @@
 				DEVELOPMENT_TEAM = ZY5G2U9YN3;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.VoiceBoxUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = IoannisManologlou.StoryCastUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -555,14 +555,14 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_TARGET_NAME = VoiceBox;
+				TEST_TARGET_NAME = StoryCast;
 			};
 			name = Release;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		528C009A2F08892000A6E0F7 /* Build configuration list for PBXProject "VoiceBox" */ = {
+		528C009A2F08892000A6E0F7 /* Build configuration list for PBXProject "StoryCast" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				528C00C02F08892100A6E0F7 /* Debug */,
@@ -571,7 +571,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		528C00C22F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "VoiceBox" */ = {
+		528C00C22F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "StoryCast" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				528C00C32F08892100A6E0F7 /* Debug */,
@@ -580,7 +580,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		528C00C52F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "VoiceBoxTests" */ = {
+		528C00C52F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "StoryCastTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				528C00C62F08892100A6E0F7 /* Debug */,
@@ -589,7 +589,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		528C00C82F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "VoiceBoxUITests" */ = {
+		528C00C82F08892100A6E0F7 /* Build configuration list for PBXNativeTarget "StoryCastUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				528C00C92F08892100A6E0F7 /* Debug */,

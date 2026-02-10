@@ -3,7 +3,7 @@ PRIVACY POLICY
 
 Effective Date: February 8, 2026
 
-VoiceBox ("the App") is built to work locally on your device. This policy explains what data the app does and does not handle.
+StoryCast ("the App") is built to work locally on your device. This policy explains what data the app does and does not handle.
 
 NO APP DATA COLLECTION
 ----------------------

@@ -13,11 +13,11 @@ actor StorageManager {
     ]
     #endif
     
-    nonisolated var voiceBoxLibraryURL: URL {
+    nonisolated var storyCastLibraryURL: URL {
         guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            return FileManager.default.temporaryDirectory.appendingPathComponent("VoiceBoxLibrary")
+            return FileManager.default.temporaryDirectory.appendingPathComponent("StoryCastLibrary")
         }
-        return documentsURL.appendingPathComponent("VoiceBoxLibrary")
+        return documentsURL.appendingPathComponent("StoryCastLibrary")
     }
 
     nonisolated var coverArtDirectoryURL: URL {
@@ -27,13 +27,13 @@ actor StorageManager {
         return documentsURL.appendingPathComponent("CoverArt")
     }
 
-    func setupVoiceBoxLibraryDirectory() throws {
+    func setupStoryCastLibraryDirectory() throws {
         let fileManager = FileManager.default
-        if !fileManager.fileExists(atPath: voiceBoxLibraryURL.path) {
-            try fileManager.createDirectory(at: voiceBoxLibraryURL, withIntermediateDirectories: true, attributes: nil)
+        if !fileManager.fileExists(atPath: storyCastLibraryURL.path) {
+            try fileManager.createDirectory(at: storyCastLibraryURL, withIntermediateDirectories: true, attributes: nil)
         }
         #if os(iOS)
-        try applyFileProtection(to: voiceBoxLibraryURL)
+        try applyFileProtection(to: storyCastLibraryURL)
         #endif
     }
 
@@ -95,10 +95,10 @@ actor StorageManager {
         }
     }
 
-    func copyFileToVoiceBoxLibraryDirectory(from sourceURL: URL, withName name: String) throws -> URL {
-        try setupVoiceBoxLibraryDirectory()
+    func copyFileToStoryCastLibraryDirectory(from sourceURL: URL, withName name: String) throws -> URL {
+        try setupStoryCastLibraryDirectory()
         let uniqueName = uniqueFileName(for: name)
-        let destinationURL = voiceBoxLibraryURL.appendingPathComponent(uniqueName)
+        let destinationURL = storyCastLibraryURL.appendingPathComponent(uniqueName)
         // Use FileManager copyItem which is synchronous but we're calling it in Task.detached
         let fileManager = FileManager.default
         try fileManager.copyItem(at: sourceURL, to: destinationURL)
@@ -113,15 +113,15 @@ actor StorageManager {
         guard !UserDefaults.standard.bool(forKey: StorageDefaults.fileProtectionMigrationKey) else {
             return
         }
-        try setupVoiceBoxLibraryDirectory()
+        try setupStoryCastLibraryDirectory()
         try setupCoverArtDirectory()
         let fileManager = FileManager.default
-        let voiceBoxLibraryURLs = try fileManager.contentsOfDirectory(
-            at: voiceBoxLibraryURL,
+        let storyCastLibraryURLs = try fileManager.contentsOfDirectory(
+            at: storyCastLibraryURL,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         )
-        for url in voiceBoxLibraryURLs {
+        for url in storyCastLibraryURLs {
             try applyFileProtection(to: url)
         }
         let coverArtURLs = try fileManager.contentsOfDirectory(
@@ -142,7 +142,7 @@ actor StorageManager {
 
     private func uniqueFileName(for name: String) -> String {
         let fileManager = FileManager.default
-        let destinationURL = voiceBoxLibraryURL.appendingPathComponent(name)
+        let destinationURL = storyCastLibraryURL.appendingPathComponent(name)
         
         if !fileManager.fileExists(atPath: destinationURL.path) {
             return name
@@ -159,7 +159,7 @@ actor StorageManager {
                 candidateName += ".\(ext)"
             }
             counter += 1
-        } while fileManager.fileExists(atPath: voiceBoxLibraryURL.appendingPathComponent(candidateName).path)
+        } while fileManager.fileExists(atPath: storyCastLibraryURL.appendingPathComponent(candidateName).path)
         
         return candidateName
     }

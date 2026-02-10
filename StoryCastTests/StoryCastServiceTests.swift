@@ -6,9 +6,9 @@ import SwiftData
 #if canImport(UIKit)
 import UIKit
 #endif
-@testable import VoiceBox
+@testable import StoryCast
 
-final class VoiceBoxServiceTests: XCTestCase {
+final class StoryCastServiceTests: XCTestCase {
     private var tempURLs: [URL] = []
 
     override func tearDownWithError() throws {
@@ -69,7 +69,7 @@ final class VoiceBoxServiceTests: XCTestCase {
     func testStorageManagerCopiesAndDeletesFiles() async throws {
         let storageManager = StorageManager.shared
         let sourceURL = try makeTemporaryAudioFile()
-        let destinationURL = try await storageManager.copyFileToVoiceBoxLibraryDirectory(
+        let destinationURL = try await storageManager.copyFileToStoryCastLibraryDirectory(
             from: sourceURL,
             withName: sourceURL.lastPathComponent
         )

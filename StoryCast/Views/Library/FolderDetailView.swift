@@ -351,7 +351,7 @@ do {
 
     @MainActor
     private func deleteBook(_ book: Book, saveChanges: Bool = true) async {
-        let audioURL = StorageManager.shared.voiceBoxLibraryURL
+        let audioURL = StorageManager.shared.storyCastLibraryURL
             .appendingPathComponent(book.localFileName)
         do {
             try FileManager.default.removeItem(at: audioURL)

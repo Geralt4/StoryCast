@@ -1,6 +1,6 @@
 import XCTest
 
-final class VoiceBox_UITestsLaunchTests: XCTestCase {
+final class StoryCast_UITestsLaunchTests: XCTestCase {
 
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
         true

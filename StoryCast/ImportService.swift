@@ -282,7 +282,7 @@ class ImportService: ObservableObject {
             let title = url.deletingPathExtension().lastPathComponent
             let storageManager = StorageManager.shared
             try await Task.detached(priority: .utility) {
-                try await storageManager.setupVoiceBoxLibraryDirectory()
+                try await storageManager.setupStoryCastLibraryDirectory()
             }.value
 
             let bookId = UUID()
@@ -299,7 +299,7 @@ class ImportService: ObservableObject {
             }
 
             let localURL = try await Task.detached(priority: .utility) {
-                try await storageManager.copyFileToVoiceBoxLibraryDirectory(from: url, withName: url.lastPathComponent)
+                try await storageManager.copyFileToStoryCastLibraryDirectory(from: url, withName: url.lastPathComponent)
             }.value
 
             let importedFileSize = await Task.detached(priority: .utility) {
@@ -340,7 +340,7 @@ class ImportService: ObservableObject {
                 // - if both sides have author metadata, author must match
                 // - otherwise, fallback to exact file size match
                 let existingBooks = (try? context.fetch(FetchDescriptor<Book>())) ?? []
-                let libraryURL = StorageManager.shared.voiceBoxLibraryURL
+                let libraryURL = StorageManager.shared.storyCastLibraryURL
                 let isDuplicate = existingBooks.contains { existingBook in
                     guard Self.normalizedDuplicateToken(existingBook.title) == importNormalizedTitle else { return false }
                     guard abs(existingBook.duration - importDuration) < 1.0 else { return false }

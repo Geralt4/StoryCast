@@ -132,7 +132,7 @@ class AudioPlayerService: ObservableObject {
         print("📱 [BG] ⏱️ Starting background task at \(Date())")
 #endif
         AppLogger.playback.info("beginBackgroundTaskIfNeeded: starting background task")
-        backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "VoiceBoxPlayback") { [weak self] in
+        backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "StoryCastPlayback") { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
 #if DEBUG
@@ -598,7 +598,7 @@ class AudioPlayerService: ObservableObject {
     private func refreshNowPlayingInfo(withCurrentTime currentTime: Double? = nil) {
         // Always update Now Playing info, even if title is empty (to ensure system knows media is playing)
         var nowPlayingInfo = [String: Any]()
-        nowPlayingInfo[MPMediaItemPropertyTitle] = nowPlayingTitle.isEmpty ? "VoiceBox" : nowPlayingTitle
+        nowPlayingInfo[MPMediaItemPropertyTitle] = nowPlayingTitle.isEmpty ? "StoryCast" : nowPlayingTitle
         nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = nowPlayingDuration
         nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime ?? self.currentTime
         nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
@@ -613,7 +613,7 @@ class AudioPlayerService: ObservableObject {
         
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 #if DEBUG
-        print("🎵 [NOWPLAYING] Refreshed at \(Date()) - title: \(nowPlayingTitle.isEmpty ? "VoiceBox" : nowPlayingTitle), isPlaying: \(isPlaying), rate: \(isPlaying ? playbackRate : 0.0)")
+        print("🎵 [NOWPLAYING] Refreshed at \(Date()) - title: \(nowPlayingTitle.isEmpty ? "StoryCast" : nowPlayingTitle), isPlaying: \(isPlaying), rate: \(isPlaying ? playbackRate : 0.0)")
 #endif
         AppLogger.playback.debug("Refreshed Now Playing info; isPlaying: \(self.isPlaying)")
     }

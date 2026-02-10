@@ -380,7 +380,7 @@ struct LibraryView: View {
         }
         Button("Delete", role: .destructive) {
             if let book = searchBookToDelete {
-                let audioURL = StorageManager.shared.voiceBoxLibraryURL
+                let audioURL = StorageManager.shared.storyCastLibraryURL
                     .appendingPathComponent(book.localFileName)
                 try? FileManager.default.removeItem(at: audioURL)
                 if let coverArt = book.coverArtFileName {

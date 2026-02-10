@@ -2,11 +2,11 @@
 
 ## What to Test
 
-This TestFlight build focuses on verifying the new performance optimizations implemented throughout the VoiceBox app. Testers should focus on the following areas:
+This TestFlight build focuses on verifying the new performance optimizations implemented throughout the StoryCast app. Testers should focus on the following areas:
 
 ### Beta App Description (App Store Connect)
 
-VoiceBox is a focused, offline-first audiobook app built for smooth playback and reliable importing. This beta checks performance work around cover art caching, background imports, and SwiftData concurrency. Please stress test large libraries, imports, and playback under load, and report any stutters, crashes, or data loss.
+StoryCast is a focused, offline-first audiobook app built for smooth playback and reliable importing. This beta checks performance work around cover art caching, background imports, and SwiftData concurrency. Please stress test large libraries, imports, and playback under load, and report any stutters, crashes, or data loss.
 
 ### Caching System Performance
 
@@ -57,7 +57,7 @@ VoiceBox is a focused, offline-first audiobook app built for smooth playback and
 
 ### Version 1.x - Performance Optimization Release
 
-VoiceBox receives significant performance enhancements focused on caching, background processing, and modern Swift concurrency patterns.
+StoryCast receives significant performance enhancements focused on caching, background processing, and modern Swift concurrency patterns.
 
 Key improvements:
 

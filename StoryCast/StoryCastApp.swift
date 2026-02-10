@@ -3,7 +3,7 @@ import SwiftData
 import os
 
 @main
-struct VoiceBoxApp: App {
+struct StoryCastApp: App {
     @AppStorage("isUsingInMemoryStorage") private var isUsingInMemoryStorage = false
     let sharedModelContainer: ModelContainer
 

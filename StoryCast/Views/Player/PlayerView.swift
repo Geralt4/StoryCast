@@ -111,7 +111,7 @@ struct PlayerView: View {
     }
 
     private var bookAudioURL: URL {
-        StorageManager.shared.voiceBoxLibraryURL.appendingPathComponent(book.localFileName)
+        StorageManager.shared.storyCastLibraryURL.appendingPathComponent(book.localFileName)
     }
 
     var body: some View {

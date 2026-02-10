@@ -5,7 +5,7 @@ enum AppLogger {
     private final class BundleToken {}
 
     nonisolated private static let subsystem: String = {
-        Bundle(for: BundleToken.self).bundleIdentifier ?? "VoiceBox"
+        Bundle(for: BundleToken.self).bundleIdentifier ?? "StoryCast"
     }()
 
     nonisolated static let app = Logger(subsystem: subsystem, category: "app")

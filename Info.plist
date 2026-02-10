@@ -55,7 +55,7 @@
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>VoiceBox Document</string>
+			<string>StoryCast Document</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
