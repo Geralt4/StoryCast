@@ -10,23 +10,77 @@ import UIKit
 // Import local modules for the project
 import SwiftUI
 
+/// Manages audio playback using AVPlayer for audiobook content.
+///
+/// `AudioPlayerService` is the central coordinator for all audio playback operations:
+/// - Loads audio files from URLs
+/// - Controls playback (play, pause, seek, toggle)
+/// - Tracks progress and duration
+/// - Adjusts playback speed (0.5x - 3.0x)
+/// - Handles skip forward/backward commands
+/// - Integrates with lock screen and Control Center
+/// - Supports background playback
+///
+/// ## Architecture
+///
+/// Uses three manager singletons for separation of concerns:
+/// - `AudioSessionManager`: Audio session configuration and interruptions
+/// - `RemoteCommandHandler`: Lock screen controls and Now Playing info
+/// - `PlaybackBackgroundManager`: Background task and lifecycle events
+///
+/// ## Usage
+///
+/// ```swift
+/// let player = AudioPlayerService.shared
+/// player.loadAudio(url: audioURL, title: "Book Title", duration: 3600)
+/// player.play()
+/// player.skipForward(30)
+/// player.setPlaybackRate(1.5)
+/// ```
+///
+/// ## Thread Safety
+///
+/// All methods run on `@MainActor`. The singleton persists for the app lifetime.
 @MainActor
 class AudioPlayerService: ObservableObject {
     static let shared = AudioPlayerService()
 
+    /// Whether audio is currently playing.
+    ///
+    /// Updated automatically when playback state changes.
+    /// Observed by UI to update play/pause buttons.
     @Published var isPlaying = false
+
+    /// Current playback position in seconds.
+    ///
+    /// Updated periodically via AVPlayer time observer.
+    /// Used by progress slider and time labels.
     @Published var currentTime: Double = 0.0
+
+    /// Total audio duration in seconds.
+    ///
+    /// Loaded asynchronously when audio file is opened.
+    /// May be 0.0 initially until duration is available.
     @Published var duration: Double = 0.0
+
+    /// Playback speed multiplier.
+    ///
+    /// Range: 0.5 (half speed) to 3.0 (triple speed).
+    /// Default: 1.0 (normal speed).
+    /// Persists across app launches via PlaybackSettings.
     @Published var playbackRate: Float = 1.0
+
+    /// Whether playback has reached the end of the audio file.
+    ///
+    /// Set to `true` when AVPlayerItemDidPlayToEndTime notification fires.
+    /// Reset to `false` when loading new audio or seeking.
     @Published var playbackDidReachEnd = false
     
+    /// The URL of the currently loaded audio file.
     private(set) var currentURL: URL?
-    
-    // Now Playing metadata storage
-    private var nowPlayingTitle: String = ""
-    private var nowPlayingDuration: Double = 0.0
-    private var nowPlayingArtwork: UIImage?
 
+    // MARK: - Private Properties
+    
     private var player: AVPlayer?
     private var timeObserverToken: Any?
     private var cachedPlaybackSettings = PlaybackSettings.load()
@@ -34,512 +88,255 @@ class AudioPlayerService: ObservableObject {
     private var pendingSeekTime: Double?
     private var playerItemObserver: NSKeyValueObservation?
     private var wasPlayingBeforeInterruption = false
-    private var interruptionObserver: Any?
-    private var routeChangeObserver: Any?
     private var timeControlStatusObserver: NSKeyValueObservation?
     private var durationLoadTask: Task<Void, Never>?
     private var endOfPlaybackObserver: Any?
     private let preferredTimescale: CMTimeScale = 600
-    private var isNowPlayingConfigured = false
+    
+    // MARK: - Manager Dependencies
+    
+    private let audioSessionManager = AudioSessionManager.shared
+    private let remoteCommandHandler = RemoteCommandHandler.shared
+    private let backgroundManager = PlaybackBackgroundManager.shared
+    
     #if os(iOS)
-    private var appLifecycleObservers: [Any] = []
     private var isAudioSessionActive = false
-    private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
     #endif
 
     private init() {
-        setupAudioSession()
-        isNowPlayingConfigured = true // Set before setupNowPlaying so updateSkipIntervals guard passes
-        setupNowPlaying()
-        setupAudioSessionObservers()
+        // Configure managers
+        audioSessionManager.setup()
+        remoteCommandHandler.setup()
+        backgroundManager.setup()
+        
+        // Wire up manager callbacks - CRITICAL: Use [weak self] to prevent retain cycles
+        wireUpAudioSessionCallbacks()
+        wireUpRemoteCommandCallbacks()
+        wireUpBackgroundCallbacks()
+        
+        // Observe playback settings
         observePlaybackSettingsChanges()
         playbackRate = cachedPlaybackSettings.defaultPlaybackSpeed
     }
-
-    private func setupAudioSession() {
-        #if os(iOS)
-        do {
-            let session = AVAudioSession.sharedInstance()
-            // Configure audio session for optimal background audiobook playback
-            // Using .spokenAudio mode and .longFormAudio policy for proper lock screen/Control Center support
-            // Note: longFormAudio policy doesn't support duckOthers, allowAirPlay, allowBluetoothHFP options
-            try session.setCategory(.playback, mode: .spokenAudio, policy: .longFormAudio)
-            // Activate the audio session to enable background playback
-            try session.setActive(true)
-            AppLogger.playback.info("Audio session configured successfully for background playback")
-        } catch {
-            AppLogger.playback.error("Failed to set up audio session: \(error.localizedDescription, privacy: .private)")
-        }
-        #endif
-    }
-
-    private func ensureAudioSessionActive() {
-        #if os(iOS)
-        do {
-            let session = AVAudioSession.sharedInstance()
-            // Ensure audio session is properly configured for background playback
-            // Note: longFormAudio policy doesn't support duckOthers, allowAirPlay, allowBluetoothHFP options
-            try session.setCategory(.playback, mode: .spokenAudio, policy: .longFormAudio)
-            try session.setActive(true)
-            isAudioSessionActive = true
-        } catch {
-            AppLogger.playback.error("Failed to activate audio session: \(error.localizedDescription, privacy: .private)")
-        }
-        #endif
-    }
     
-    #if os(iOS)
-    private func ensurePlayerReadyForRemotePlay() -> Bool {
-        // Make sure we have a valid player
-        guard player != nil else {
-            AppLogger.remoteCommand.error("ensurePlayerReadyForRemotePlay: No player available")
-            return false
+    // MARK: - Manager Callbacks
+    
+    /// Wires up audio session interruption and route change callbacks.
+    /// Uses weak self to prevent retain cycles with NotificationCenter observers.
+    private func wireUpAudioSessionCallbacks() {
+        audioSessionManager.onInterruptionBegan = { [weak self] in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleAudioInterruptionBegan()
+            }
         }
         
-        // Ensure audio session is active with proper configuration
-        do {
-            let session = AVAudioSession.sharedInstance()
-            // Note: longFormAudio policy doesn't support duckOthers, allowAirPlay, allowBluetoothHFP options
-            try session.setCategory(.playback, mode: .spokenAudio, policy: .longFormAudio)
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-            isAudioSessionActive = true
-            AppLogger.remoteCommand.info("ensurePlayerReadyForRemotePlay: Audio session activated")
-            return true
-        } catch {
-            AppLogger.remoteCommand.error("ensurePlayerReadyForRemotePlay: Failed to activate audio session: \(error.localizedDescription, privacy: .private)")
-            return false
+        audioSessionManager.onInterruptionEnded = { [weak self] in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleAudioInterruptionEnded()
+            }
+        }
+        
+        audioSessionManager.onRouteChange = { [weak self] (reason: AVAudioSession.RouteChangeReason) in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleRouteChange(reason: reason)
+            }
         }
     }
     
-    #endif
-
-    private func ensureNowPlayingConfigured() {
-        guard !isNowPlayingConfigured else { return }
-        isNowPlayingConfigured = true
-        setupNowPlaying()
-    }
-
-    #if os(iOS)
-    private func beginBackgroundTaskIfNeeded() {
-        guard backgroundTaskId == .invalid else {
-#if DEBUG
-            print("📱 [BG] Task already active (ID: \(backgroundTaskId.rawValue))")
-#endif
-            AppLogger.playback.debug("beginBackgroundTaskIfNeeded: task already active")
-            return
-        }
-#if DEBUG
-        print("📱 [BG] ⏱️ Starting background task at \(Date())")
-#endif
-        AppLogger.playback.info("beginBackgroundTaskIfNeeded: starting background task")
-        backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "StoryCastPlayback") { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-#if DEBUG
-                print("📱 [BG] ⚠️ BACKGROUND TASK EXPIRED at \(Date())")
-#endif
-                AppLogger.playback.warning("Background task expired; ending task.")
-                self.endBackgroundTaskIfNeeded()
-            }
-        }
-        if backgroundTaskId == .invalid {
-#if DEBUG
-            print("📱 [BG] ❌ Failed to start background task")
-#endif
-            AppLogger.playback.warning("Failed to start background task.")
-        } else {
-#if DEBUG
-            print("📱 [BG] ✅ Task started with ID: \(backgroundTaskId.rawValue)")
-#endif
-            AppLogger.playback.info("beginBackgroundTaskIfNeeded: background task started with id \(self.backgroundTaskId.rawValue)")
-        }
-    }
-
-    private func endBackgroundTaskIfNeeded() {
-        guard backgroundTaskId != .invalid else { 
-#if DEBUG
-            print("📱 [BG] No active task to end")
-#endif
-            return 
-        }
-#if DEBUG
-        print("📱 [BG] 🛑 Ending background task (ID: \(backgroundTaskId.rawValue)) at \(Date())")
-#endif
-        UIApplication.shared.endBackgroundTask(backgroundTaskId)
-        backgroundTaskId = .invalid
-    }
-    #endif
-
-    private func setupNowPlaying() {
-#if DEBUG
-        print("🎛️ [REMOTECTRL] Setting up Now Playing at \(Date())")
-#endif
-        #if os(iOS)
-        let commandCenter = MPRemoteCommandCenter.shared()
-#if DEBUG
-        print("🎛️ [REMOTECTRL] Registering remote command targets")
-#endif
-        // Targets registered once; singleton lives for app lifecycle.
-
-        commandCenter.playCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .noActionableNowPlayingItem }
-#if DEBUG
-            let thread = Thread.current
-            print("🎮 [REMOTE] ▶️ PLAY command received at \(Date()) on thread: \(thread.description)")
-#endif
-            AppLogger.remoteCommand.info("playCommand received")
-            
-            // All MainActor-isolated work is dispatched asynchronously
-            // Audio session activation and player readiness are handled inside the Task
+    /// Wires up remote command center callbacks for lock screen controls.
+    /// Uses weak self to prevent retain cycles with MPRemoteCommandCenter.
+    private func wireUpRemoteCommandCallbacks() {
+        remoteCommandHandler.onPlay = { [weak self] in
+            guard let self = self else { return }
             Task { @MainActor in
-#if DEBUG
-                print("🎮 [REMOTE] 🎯 MainActor task executing at \(Date())")
-#endif
-                AppLogger.remoteCommand.info("playCommand: MainActor task started")
-                guard self.ensurePlayerReadyForRemotePlay() else {
-#if DEBUG
-                    print("🎮 [REMOTE] ❌ Player not ready for remote play")
-#endif
-                    return
-                }
-                self.beginBackgroundTaskIfNeeded()
                 self.play()
-#if DEBUG
-                print("🎮 [REMOTE] ✅ play() completed at \(Date())")
-#endif
-                AppLogger.remoteCommand.info("playCommand: play() completed")
             }
-#if DEBUG
-            print("🎮 [REMOTE] 🏁 Returning .success at \(Date())")
-#endif
-            return .success
         }
-
-        commandCenter.pauseCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .noActionableNowPlayingItem }
-#if DEBUG
-            print("🎮 [REMOTE] ⏸️ PAUSE command received at \(Date())")
-#endif
-            AppLogger.remoteCommand.info("pauseCommand received")
-            
+        
+        remoteCommandHandler.onPause = { [weak self] in
+            guard let self = self else { return }
             Task { @MainActor in
-#if DEBUG
-                print("🎮 [REMOTE] 🎯 MainActor task executing at \(Date())")
-#endif
                 self.pause()
-#if DEBUG
-                print("🎮 [REMOTE] ✅ pause() completed at \(Date())")
-#endif
-                AppLogger.remoteCommand.info("pauseCommand: pause() completed")
             }
-#if DEBUG
-            print("🎮 [REMOTE] 🏁 Returning .success at \(Date())")
-#endif
-            return .success
         }
-
-        commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .noActionableNowPlayingItem }
-#if DEBUG
-            print("🎮 [REMOTE] 🔀 TOGGLE command received at \(Date())")
-#endif
-            AppLogger.remoteCommand.info("togglePlayPauseCommand received")
-            
-            // All MainActor-isolated state reads and mutations happen inside the Task
+        
+        remoteCommandHandler.onTogglePlayPause = { [weak self] (isPlaying: Bool) in
+            guard let self = self else { return }
             Task { @MainActor in
-#if DEBUG
-                print("🎮 [REMOTE] 🎯 MainActor task executing at \(Date())")
-#endif
-                if self.isPlaying {
-#if DEBUG
-                    print("🎮 [REMOTE] ⏸️ Pause branch in toggle")
-#endif
-                    AppLogger.remoteCommand.info("togglePlayPauseCommand: pausing")
+                if isPlaying {
                     self.pause()
                 } else {
-#if DEBUG
-                    print("🎮 [REMOTE] ▶️ Play branch in toggle")
-#endif
-                    AppLogger.remoteCommand.info("togglePlayPauseCommand: playing")
-                    guard self.ensurePlayerReadyForRemotePlay() else {
-#if DEBUG
-                        print("🎮 [REMOTE] ❌ Player not ready for toggle play")
-#endif
-                        return
-                    }
-                    self.beginBackgroundTaskIfNeeded()
                     self.play()
                 }
-#if DEBUG
-                print("🎮 [REMOTE] ✅ Toggle completed at \(Date())")
-#endif
             }
-#if DEBUG
-            print("🎮 [REMOTE] 🏁 Returning .success at \(Date())")
-#endif
-            return .success
         }
-
-        commandCenter.skipForwardCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .noActionableNowPlayingItem }
-            AppLogger.remoteCommand.info("skipForwardCommand received")
-            
+        
+        remoteCommandHandler.onSkipForward = { [weak self] in
+            guard let self = self else { return }
             Task { @MainActor in
                 self.skipForward()
             }
-            return .success
         }
-
-        commandCenter.skipBackwardCommand.addTarget { [weak self] _ in
-            guard let self = self else { return .noActionableNowPlayingItem }
-            AppLogger.remoteCommand.info("skipBackwardCommand received")
-            
+        
+        remoteCommandHandler.onSkipBackward = { [weak self] in
+            guard let self = self else { return }
             Task { @MainActor in
                 self.skipBackward()
             }
-            return .success
         }
-
-        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let self = self, let event = event as? MPChangePlaybackPositionCommandEvent else {
-                return .noActionableNowPlayingItem
-            }
-            AppLogger.remoteCommand.info("changePlaybackPositionCommand received: position=\(event.positionTime, privacy: .private)")
-            
+        
+        remoteCommandHandler.onSeek = { [weak self] (time: Double) in
+            guard let self = self else { return }
             Task { @MainActor in
-                self.seek(to: event.positionTime)
+                self.seek(to: time)
             }
-            return .success
         }
-
-        // Enable commands
-        commandCenter.playCommand.isEnabled = true
-        commandCenter.pauseCommand.isEnabled = true
-        commandCenter.togglePlayPauseCommand.isEnabled = true
-        commandCenter.skipForwardCommand.isEnabled = true
-        commandCenter.skipBackwardCommand.isEnabled = true
-        commandCenter.changePlaybackPositionCommand.isEnabled = true
-#if DEBUG
-        print("🎛️ [REMOTECTRL] All remote commands enabled")
-#endif
-
-        // Set preferred skip intervals
-        updateSkipIntervals()
-#if DEBUG
-        print("🎛️ [REMOTECTRL] ✅ Now Playing setup complete at \(Date())")
-#endif
-        #endif
+    }
+    
+    /// Wires up background task and lifecycle callbacks.
+    /// Uses weak self to prevent retain cycles with UIApplication observers.
+    private func wireUpBackgroundCallbacks() {
+        backgroundManager.onWillResignActive = { [weak self] in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleAppWillResignActive()
+            }
+        }
+        
+        backgroundManager.onDidEnterBackground = { [weak self] in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleAppDidEnterBackground()
+            }
+        }
+        
+        backgroundManager.onWillEnterForeground = { [weak self] in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleAppWillEnterForeground()
+            }
+        }
+        
+        backgroundManager.onDidBecomeActive = { [weak self] in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleAppDidBecomeActive()
+            }
+        }
+        
+        backgroundManager.onProtectedDataWillBecomeUnavailable = { [weak self] in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleProtectedDataWillBecomeUnavailable()
+            }
+        }
+        
+        backgroundManager.onProtectedDataDidBecomeAvailable = { [weak self] in
+            guard let self = self else { return }
+            Task { @MainActor in
+                self.handleProtectedDataDidBecomeAvailable()
+            }
+        }
     }
 
     func handleAppDidEnterBackground() {
-#if DEBUG
-        print("📱 [LIFECYCLE] 🌙 didEnterBackground at \(Date()) - isPlaying: \(isPlaying)")
-#endif
         #if os(iOS)
         guard isPlaying else {
-#if DEBUG
-            print("📱 [LIFECYCLE] Not playing, ending background task")
-#endif
-            endBackgroundTaskIfNeeded()
+            backgroundManager.isPlaying = false
             return
         }
-#if DEBUG
-        print("📱 [LIFECYCLE] Playing - ensuring audio session active")
-#endif
-        ensureAudioSessionActive()
-#if DEBUG
-        print("📱 [LIFECYCLE] Playing - starting background task")
-#endif
-        beginBackgroundTaskIfNeeded()
-#if DEBUG
-        print("📱 [LIFECYCLE] Playing - updating playback rate")
-#endif
+        backgroundManager.isPlaying = true
+        audioSessionManager.ensureActive()
         updatePlaybackRate()
-        // Refresh NowPlayingInfo before app goes to background
-#if DEBUG
-        print("📱 [LIFECYCLE] Playing - refreshing now playing info")
-#endif
         refreshNowPlayingInfo()
         #endif
     }
 
     func handleAppDidBecomeActive() {
-#if DEBUG
-        print("📱 [LIFECYCLE] ☀️ didBecomeActive at \(Date()) - isPlaying: \(isPlaying)")
-#endif
         #if os(iOS)
         guard isPlaying else {
-#if DEBUG
-            print("📱 [LIFECYCLE] Not playing, ending background task")
-#endif
-            endBackgroundTaskIfNeeded()
+            backgroundManager.isPlaying = false
             return
         }
-#if DEBUG
-        print("📱 [LIFECYCLE] Playing - ensuring audio session active")
-#endif
-        ensureAudioSessionActive()
-#if DEBUG
-        print("📱 [LIFECYCLE] Playing - updating playback rate")
-#endif
+        audioSessionManager.ensureActive()
         updatePlaybackRate()
-        // Refresh NowPlayingInfo when app becomes active
-#if DEBUG
-        print("📱 [LIFECYCLE] Playing - refreshing now playing info")
-#endif
         refreshNowPlayingInfo()
         #endif
     }
-
-    private func setupAudioSessionObservers() {
+    
+    // MARK: - Audio Session Interruption Handlers
+    
+    /// Handles audio interruption began event (phone calls, Siri, etc.)
+    private func handleAudioInterruptionBegan() {
         #if os(iOS)
-        // Handle audio interruptions (e.g., phone calls) - but NOT screen lock interruptions
-        interruptionObserver = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
-            guard let userInfo = notification.userInfo else { return }
-            let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt ?? 0
-            let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-#if DEBUG
-            print("🔊 [SESSION] Audio interruption: type=\(typeValue), options=\(optionsValue) at \(Date())")
-#endif
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let type = AVAudioSession.InterruptionType(rawValue: typeValue) ?? .ended
-                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                
-                AppLogger.playback.info("Audio interruption: type=\(typeValue), options=\(optionsValue)")
-                
-                if type == .began {
-#if DEBUG
-                    print("🔊 [SESSION] Interruption began - wasPlaying: \(self.isPlaying)")
-#endif
-                    // For interruptions (phone calls, Siri, etc.), pause playback and remember state
-                    self.wasPlayingBeforeInterruption = self.isPlaying
-                    if self.isPlaying {
-                        // Pause the player but DON'T end background task
-                        // We need to keep it alive to resume after interruption
-#if DEBUG
-                        print("🔊 [SESSION] Pausing player due to interruption")
-#endif
-                        self.player?.pause()
-                        self.updatePlaybackState()
-                        self.updatePlaybackRate()
-                        self.isAudioSessionActive = false
-                        AppLogger.playback.info("Paused due to audio interruption (keeping background task)")
-                    }
-                } else if type == .ended {
-#if DEBUG
-                    print("🔊 [SESSION] Interruption ended - shouldResume: \(options.contains(.shouldResume)), wasPlaying: \(self.wasPlayingBeforeInterruption)")
-#endif
-                    AppLogger.playback.info("Audio interruption ended - shouldResume: \(options.contains(.shouldResume)), wasPlaying: \(self.wasPlayingBeforeInterruption)")
-                    if options.contains(.shouldResume) && self.wasPlayingBeforeInterruption {
-                        // Re-activate audio session and resume playback
-#if DEBUG
-                        print("🔊 [SESSION] Resuming playback after interruption")
-#endif
-                        try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-                        self.isAudioSessionActive = true
-                        self.play()
-                    }
-                }
+        wasPlayingBeforeInterruption = isPlaying
+        if isPlaying {
+            player?.pause()
+            updatePlaybackState()
+            updatePlaybackRate()
+            isAudioSessionActive = false
+            AppLogger.playback.info("Paused due to audio interruption (keeping background task)")
+        }
+        #endif
+    }
+    
+    /// Handles audio interruption ended event
+    private func handleAudioInterruptionEnded() {
+        #if os(iOS)
+        if wasPlayingBeforeInterruption {
+            do {
+                try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+                isAudioSessionActive = true
+                play()
+            } catch {
+                AppLogger.playback.error("Failed to reactivate audio session after interruption: \(error.localizedDescription, privacy: .private)")
             }
         }
-
-        // Handle route changes (e.g., headphones disconnected)
-        routeChangeObserver = NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] notification in
-            guard let userInfo = notification.userInfo else { return }
-            let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
-#if DEBUG
-            print("🔊 [SESSION] Route change: reason=\(reasonValue) at \(Date())")
-#endif
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) ?? .unknown
-                if reason == .oldDeviceUnavailable {
-#if DEBUG
-                    print("🔊 [SESSION] Old device unavailable - pausing playback")
-#endif
-                    // Headphones/Bluetooth disconnected, pause playback
-                    self.pause()
-                }
-            }
+        #endif
+    }
+    
+    /// Handles audio route change events (headphones disconnect, etc.)
+    private func handleRouteChange(reason: AVAudioSession.RouteChangeReason) {
+        #if os(iOS)
+        if reason == .oldDeviceUnavailable {
+            pause()
         }
-
-        let center = NotificationCenter.default
-        appLifecycleObservers.append(center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleAppWillResignActive()
-            }
-        })
-        appLifecycleObservers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleAppDidEnterBackground()
-            }
-        })
-        appLifecycleObservers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleAppWillEnterForeground()
-            }
-        })
-        appLifecycleObservers.append(center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleAppDidBecomeActive()
-            }
-        })
-        appLifecycleObservers.append(center.addObserver(forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleProtectedDataWillBecomeUnavailable()
-            }
-        })
-        appLifecycleObservers.append(center.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleProtectedDataDidBecomeAvailable()
-            }
-        })
         #endif
     }
 
     func handleAppWillResignActive() {
-#if DEBUG
-        print("📱 [LIFECYCLE] ⏳ willResignActive at \(Date()) - isPlaying: \(isPlaying)")
-#endif
         #if os(iOS)
         guard isPlaying else { return }
-        ensureAudioSessionActive()
-        beginBackgroundTaskIfNeeded()
+        audioSessionManager.ensureActive()
+        backgroundManager.isPlaying = true
         updatePlaybackRate()
         #endif
     }
 
     func handleAppWillEnterForeground() {
-#if DEBUG
-        print("📱 [LIFECYCLE] 🌅 willEnterForeground at \(Date()) - isPlaying: \(isPlaying)")
-#endif
         #if os(iOS)
         guard isPlaying else { return }
-        ensureAudioSessionActive()
+        audioSessionManager.ensureActive()
         updatePlaybackRate()
         #endif
     }
 
     func handleProtectedDataWillBecomeUnavailable() {
-#if DEBUG
-        print("📱 [LIFECYCLE] 🔒 protectedDataWillBecomeUnavailable at \(Date()) - isPlaying: \(isPlaying)")
-#endif
         #if os(iOS)
         guard isPlaying else { return }
-        ensureAudioSessionActive()
-        beginBackgroundTaskIfNeeded()
+        audioSessionManager.ensureActive()
+        backgroundManager.isPlaying = true
         updatePlaybackRate()
         #endif
     }
 
     func handleProtectedDataDidBecomeAvailable() {
-#if DEBUG
-        print("📱 [LIFECYCLE] 🔓 protectedDataDidBecomeAvailable at \(Date()) - isPlaying: \(isPlaying)")
-#endif
         #if os(iOS)
         guard isPlaying else { return }
-        ensureAudioSessionActive()
+        audioSessionManager.ensureActive()
         updatePlaybackRate()
         #endif
     }
@@ -550,9 +347,9 @@ class AudioPlayerService: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            let settings = PlaybackSettings.load()
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
+                let settings = PlaybackSettings.load()
                 let previousPlaybackRate = self.cachedPlaybackSettings.defaultPlaybackSpeed
                 self.cachedPlaybackSettings = settings
                 if settings.defaultPlaybackSpeed != previousPlaybackRate {
@@ -562,60 +359,43 @@ class AudioPlayerService: ObservableObject {
                     }
                     self.updatePlaybackRate()
                 }
-                self.updateSkipIntervals()
+                self.remoteCommandHandler.skipForwardSeconds = settings.skipForwardSeconds
+                self.remoteCommandHandler.skipBackwardSeconds = settings.skipBackwardSeconds
+                self.remoteCommandHandler.updateSkipIntervals()
             }
         }
     }
 
-    private func updateSkipIntervals() {
-        guard isNowPlayingConfigured else { return }
-        #if os(iOS)
-        let commandCenter = MPRemoteCommandCenter.shared()
-        commandCenter.skipForwardCommand.preferredIntervals = [NSNumber(value: cachedPlaybackSettings.skipForwardSeconds)]
-        commandCenter.skipBackwardCommand.preferredIntervals = [NSNumber(value: cachedPlaybackSettings.skipBackwardSeconds)]
-        #endif
-    }
-
     func updateNowPlayingInfo(title: String, duration: Double, currentTime: Double, artwork: UIImage? = nil) {
         #if os(iOS)
-        // Store metadata for future updates
-        nowPlayingTitle = title
-        nowPlayingDuration = duration
-        nowPlayingArtwork = artwork
-        
-        refreshNowPlayingInfo(withCurrentTime: currentTime)
+        remoteCommandHandler.updateNowPlayingInfo(
+            title: title,
+            duration: duration,
+            currentTime: currentTime,
+            artwork: artwork
+        )
         #endif
     }
     
     func updateNowPlayingTitle(_ title: String) {
         #if os(iOS)
-        nowPlayingTitle = title
-        refreshNowPlayingInfo()
+        remoteCommandHandler.updateNowPlayingInfo(
+            title: title,
+            duration: duration,
+            currentTime: currentTime,
+            artwork: nil
+        )
         #endif
     }
     
     #if os(iOS)
     private func refreshNowPlayingInfo(withCurrentTime currentTime: Double? = nil) {
-        // Always update Now Playing info, even if title is empty (to ensure system knows media is playing)
-        var nowPlayingInfo = [String: Any]()
-        nowPlayingInfo[MPMediaItemPropertyTitle] = nowPlayingTitle.isEmpty ? "StoryCast" : nowPlayingTitle
-        nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = nowPlayingDuration
-        nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime ?? self.currentTime
-        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
-        nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
-        nowPlayingInfo[MPMediaItemPropertyMediaType] = MPMediaType.audioBook.rawValue
-        
-        if let artwork = nowPlayingArtwork {
-            nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { size in
-                return artwork
-            }
-        }
-        
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-#if DEBUG
-        print("🎵 [NOWPLAYING] Refreshed at \(Date()) - title: \(nowPlayingTitle.isEmpty ? "StoryCast" : nowPlayingTitle), isPlaying: \(isPlaying), rate: \(isPlaying ? playbackRate : 0.0)")
-#endif
-        AppLogger.playback.debug("Refreshed Now Playing info; isPlaying: \(self.isPlaying)")
+        remoteCommandHandler.updateNowPlayingInfo(
+            title: "",
+            duration: duration,
+            currentTime: currentTime ?? self.currentTime,
+            artwork: nil
+        )
     }
     #endif
 
@@ -627,10 +407,46 @@ class AudioPlayerService: ObservableObject {
         #endif
     }
 
+    func loadAuthenticatedAudio(stream: AuthenticatedStream, title: String, duration: Double, seekTo time: Double? = nil) {
+        loadAudioAsset(
+            url: stream.url,
+            title: title,
+            duration: duration,
+            seekTo: time,
+            assetOptions: ["AVURLAssetHTTPHeaderFieldsKey": stream.headers]
+        )
+    }
+
+    /// Loads audio from a URL and prepares for playback.
+    ///
+    /// This method:
+    /// 1. Removes existing time observers and cleans up AVPlayer
+    /// 2. Creates a new AVPlayer instance with the provided URL
+    /// 3. Sets up periodic time observer for progress tracking
+    /// 4. Asynchronously loads the audio duration
+    /// 5. Sets up end-of-playback notification observer
+    /// 6. Updates Now Playing info with the provided metadata
+    /// 7. Performs initial seek if `seekTo` is provided
+    ///
+    /// - Parameters:
+    ///   - url: The file URL of the audio to load. Must be a valid audio file.
+    ///   - title: The title displayed in Now Playing (lock screen, Control Center).
+    ///   - duration: Expected duration in seconds. Updated when actual duration loads.
+    ///   - seekTo: Optional initial playback position in seconds. If nil, starts at 0.
+    ///
+    /// - Note: Call this before `play()` to prepare the player.
+    /// - Important: This resets `playbackDidReachEnd` to `false`.
     func loadAudio(url: URL, title: String, duration: Double, seekTo time: Double? = nil) {
-#if DEBUG
-        print("📂 [LOAD] Loading audio at \(Date()) - title: \(title), duration: \(duration), seekTo: \(time ?? 0.0)")
-#endif
+        loadAudioAsset(url: url, title: title, duration: duration, seekTo: time)
+    }
+
+    private func loadAudioAsset(
+        url: URL,
+        title: String,
+        duration: Double,
+        seekTo time: Double? = nil,
+        assetOptions: [String: Any]? = nil
+    ) {
         // Remove existing time observer before creating new player
         removeTimeObserver()
         playerItemObserver = nil
@@ -648,12 +464,11 @@ class AudioPlayerService: ObservableObject {
         pendingSeekTime = time
         
         // Set Now Playing info immediately when loading audio
-#if DEBUG
-        print("📂 [LOAD] Setting Now Playing info immediately")
-#endif
         updateNowPlayingInfo(title: title, duration: duration, currentTime: time ?? 0.0)
-        
-        player = AVPlayer(url: url)
+
+        let asset = AVURLAsset(url: url, options: assetOptions)
+        let playerItem = AVPlayerItem(asset: asset)
+        player = AVPlayer(playerItem: playerItem)
         player?.automaticallyWaitsToMinimizeStalling = true
         player?.allowsExternalPlayback = true
         player?.volume = 1.0
@@ -687,79 +502,69 @@ class AudioPlayerService: ObservableObject {
         }
     }
 
+    /// Starts or resumes audio playback.
+    ///
+    /// This method:
+    /// 1. Activates the audio session (ensures background playback is enabled)
+    /// 2. Calls `playImmediately(atRate:)` on the AVPlayer
+    /// 3. Updates internal playing state
+    /// 4. Refreshes Now Playing info with current metadata
+    /// 5. Registers background task if needed
+    ///
+    /// - Note: If no audio is loaded, this has no effect.
+    /// - Important: This resets `playbackDidReachEnd` to `false`.
     func play() {
-#if DEBUG
-        print("▶️ [PLAYER] play() called at \(Date())")
-#endif
-#if DEBUG
-        print("▶️ [PLAYER] Current state - isPlaying: \(self.isPlaying), hasPlayer: \(self.player != nil), timeControlStatus: \(self.player?.timeControlStatus.rawValue ?? -1)")
-#endif
         #if os(iOS)
-#if DEBUG
-        print("▶️ [PLAYER] Audio session active: \(isAudioSessionActive)")
-#endif
         #endif
         AppLogger.playback.info("play() called - isPlaying: \(self.isPlaying), hasPlayer: \(self.player != nil)")
         #if os(iOS)
-        beginBackgroundTaskIfNeeded()
+        backgroundManager.isPlaying = true
         #endif
-#if DEBUG
-        print("▶️ [PLAYER] Ensuring audio session active")
-#endif
-        ensureAudioSessionActive()
-#if DEBUG
-        print("▶️ [PLAYER] Ensuring now playing configured")
-#endif
-        ensureNowPlayingConfigured()
-#if DEBUG
-        print("▶️ [PLAYER] Calling playImmediately(atRate: \(playbackRate))")
-#endif
+        audioSessionManager.ensureActive()
         player?.playImmediately(atRate: playbackRate)
-#if DEBUG
-        print("▶️ [PLAYER] Updating playback state")
-#endif
         updatePlaybackState()
         updatePlaybackRate()
         #if os(iOS)
         refreshNowPlayingInfo()
         #endif
         playbackDidReachEnd = false
-#if DEBUG
-        print("▶️ [PLAYER] play() completed at \(Date()) - isPlaying: \(self.isPlaying), timeControlStatus: \(self.player?.timeControlStatus.rawValue ?? -1)")
-#endif
         AppLogger.playback.info("play() completed - isPlaying: \(self.isPlaying)")
     }
 
+    /// Pauses audio playback.
+    ///
+    /// This method:
+    /// 1. Calls `pause()` on the AVPlayer
+    /// 2. Updates internal playing state
+    /// 3. Ends background task if running
+    /// 4. Refreshes Now Playing info (shows paused state)
+    ///
+    /// - Note: Safe to call even if already paused.
     func pause() {
-#if DEBUG
-        print("⏸️ [PLAYER] pause() called at \(Date())")
-#endif
-#if DEBUG
-        print("⏸️ [PLAYER] Current state - isPlaying: \(self.isPlaying), hasPlayer: \(self.player != nil), timeControlStatus: \(self.player?.timeControlStatus.rawValue ?? -1)")
-#endif
         AppLogger.playback.info("pause() called - isPlaying: \(self.isPlaying)")
-#if DEBUG
-        print("⏸️ [PLAYER] Calling player.pause()")
-#endif
         player?.pause()
         isPlaying = false
         #if os(iOS)
-        endBackgroundTaskIfNeeded()
+        backgroundManager.isPlaying = false
+        remoteCommandHandler.isPlaying = false
         #endif
-#if DEBUG
-        print("⏸️ [PLAYER] Updating playback state")
-#endif
         updatePlaybackState()
         updatePlaybackRate()
         #if os(iOS)
         refreshNowPlayingInfo()
         #endif
-#if DEBUG
-        print("⏸️ [PLAYER] pause() completed at \(Date()) - isPlaying: \(self.isPlaying), timeControlStatus: \(self.player?.timeControlStatus.rawValue ?? -1)")
-#endif
         AppLogger.playback.info("pause() completed - isPlaying: \(self.isPlaying)")
     }
 
+    /// Seeks to a specific playback position.
+    ///
+    /// Uses AVPlayer's seek(to:) for accurate positioning.
+    /// Updates Now Playing elapsed time immediately.
+    ///
+    /// - Parameter time: The position in seconds to seek to.
+    ///                  Clamped to valid range (0 to duration).
+    ///
+    /// - Note: This resets `playbackDidReachEnd` to `false`.
     func seek(to time: Double) {
         let cmTime = CMTime(seconds: time, preferredTimescale: preferredTimescale)
         player?.seek(to: cmTime)
@@ -811,6 +616,12 @@ class AudioPlayerService: ObservableObject {
         }
     }
 
+    /// Toggles between play and pause states.
+    ///
+    /// Convenience method that calls `play()` if paused,
+    /// or `pause()` if playing.
+    ///
+    /// - Note: Equivalent to pressing the play/pause button on lock screen.
     func togglePlayPause() {
         if isPlaying {
             pause()
@@ -821,6 +632,15 @@ class AudioPlayerService: ObservableObject {
     
     // MARK: - Skip Controls
     
+    /// Skips forward by the specified seconds.
+    ///
+    /// If no seconds specified, uses the user's preferred skip interval
+    /// from PlaybackSettings (default: 30 seconds).
+    ///
+    /// - Parameter seconds: Optional skip duration in seconds.
+    ///                      If nil, uses `skipForwardSeconds` from settings.
+    ///
+    /// - Note: Clamps to duration (won't skip past end).
     func skipForward(_ seconds: Double? = nil) {
         guard duration > 0 else { return }
         let skipSeconds = seconds ?? cachedPlaybackSettings.skipForwardSeconds
@@ -828,6 +648,15 @@ class AudioPlayerService: ObservableObject {
         seek(to: newTime)
     }
     
+    /// Skips backward by the specified seconds.
+    ///
+    /// If no seconds specified, uses the user's preferred skip interval
+    /// from PlaybackSettings (default: 15 seconds).
+    ///
+    /// - Parameter seconds: Optional skip duration in seconds.
+    ///                      If nil, uses `skipBackwardSeconds` from settings.
+    ///
+    /// - Note: Clamps to 0 (won't skip before start).
     func skipBackward(_ seconds: Double? = nil) {
         let skipSeconds = seconds ?? cachedPlaybackSettings.skipBackwardSeconds
         let newTime = max(currentTime - skipSeconds, 0)
@@ -836,6 +665,21 @@ class AudioPlayerService: ObservableObject {
     
     // MARK: - Playback Speed
     
+    /// Sets the playback speed multiplier.
+    ///
+    /// Valid range: 0.5 (half speed) to 3.0 (triple speed).
+    /// Common values: 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0
+    ///
+    /// This method:
+    /// 1. Updates the `playbackRate` published property
+    /// 2. Applies the rate to AVPlayer if currently playing
+    /// 3. Updates Now Playing playback rate info
+    /// 4. Persists the setting to PlaybackSettings
+    ///
+    /// - Parameter rate: The playback speed multiplier.
+    ///                   Must be > 0. Typical range: 0.5 - 3.0.
+    ///
+    /// - Note: Setting rate to 0 pauses playback.
     func setPlaybackRate(_ rate: Float) {
         playbackRate = rate
         // Only set player rate when actively playing to avoid starting playback
@@ -854,17 +698,11 @@ class AudioPlayerService: ObservableObject {
         let status = (player ?? self.player)?.timeControlStatus
         let newPlayingState = status == .playing
         if newPlayingState != isPlaying {
-#if DEBUG
-            print("🎯 [STATE] Playback state changed: \(isPlaying ? "playing" : "paused") -> \(newPlayingState ? "playing" : "paused") (timeControlStatus: \(status?.rawValue ?? -1)) at \(Date())")
-#endif
         }
         isPlaying = newPlayingState
         #if os(iOS)
-        if isPlaying {
-            beginBackgroundTaskIfNeeded()
-        } else {
-            endBackgroundTaskIfNeeded()
-        }
+        PlaybackBackgroundManager.shared.isPlaying = newPlayingState
+        remoteCommandHandler.isPlaying = newPlayingState
         #endif
     }
 
@@ -873,9 +711,6 @@ class AudioPlayerService: ObservableObject {
             \.timeControlStatus,
             options: [.initial, .new]
         ) { [weak self] player, _ in
-#if DEBUG
-            print("👁️ [OBSERVER] timeControlStatus changed to: \(player.timeControlStatus) at \(Date())")
-#endif
             Task { @MainActor [weak self] in
                 self?.updatePlaybackState(from: player)
             }

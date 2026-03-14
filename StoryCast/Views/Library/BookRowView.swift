@@ -1,12 +1,15 @@
 import SwiftUI
+import SwiftData
 
-struct BookRowView: View {
+struct BookRowView: View, Equatable {
     let book: Book
     let isEditing: Bool
     let isSelected: Bool
     let onSelect: () -> Void
     let onMove: () -> Void
     let onDelete: () -> Void
+    var onDownload: () -> Void = {}
+    var onRemoveDownload: () -> Void = {}
 
     init(
         book: Book,
@@ -14,7 +17,9 @@ struct BookRowView: View {
         isSelected: Bool = false,
         onSelect: @escaping () -> Void = {},
         onMove: @escaping () -> Void = {},
-        onDelete: @escaping () -> Void = {}
+        onDelete: @escaping () -> Void = {},
+        onDownload: @escaping () -> Void = {},
+        onRemoveDownload: @escaping () -> Void = {}
     ) {
         self.book = book
         self.isEditing = isEditing
@@ -22,6 +27,16 @@ struct BookRowView: View {
         self.onSelect = onSelect
         self.onMove = onMove
         self.onDelete = onDelete
+        self.onDownload = onDownload
+        self.onRemoveDownload = onRemoveDownload
+    }
+    
+    static func == (lhs: BookRowView, rhs: BookRowView) -> Bool {
+        // Compare by book ID and selection state - closures are not compared
+        let sameBook = lhs.book.id == rhs.book.id
+        let sameEditing = lhs.isEditing == rhs.isEditing
+        let sameSelected = lhs.isSelected == rhs.isSelected
+        return sameBook && sameEditing && sameSelected
     }
 
     var body: some View {
@@ -53,6 +68,26 @@ struct BookRowView: View {
                 }) {
                     Label("Move", systemImage: "folder")
                 }
+                
+                // Remote book actions
+                if book.isRemote {
+                    if book.isDownloaded {
+                        Button(action: {
+                            HapticManager.impact(.light)
+                            onRemoveDownload()
+                        }) {
+                            Label("Remove Download", systemImage: "icloud.and.arrow.down")
+                        }
+                    } else {
+                        Button(action: {
+                            HapticManager.impact(.light)
+                            onDownload()
+                        }) {
+                            Label("Download for Offline", systemImage: "icloud.and.arrow.down")
+                        }
+                    }
+                }
+                
                 Button(role: .destructive, action: {
                     HapticManager.impact(.heavy)
                     HapticManager.notification(.error)
@@ -85,8 +120,17 @@ struct BookRowView: View {
 
     private var bookInfoView: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(book.title)
-                .font(.headline)
+            HStack {
+                Text(book.title)
+                    .font(.headline)
+                if book.isRemote {
+                    Spacer()
+                    Image(systemName: book.isDownloaded ? "icloud.and.arrow.down.fill" : "icloud")
+                        .foregroundColor(book.isDownloaded ? .green : .secondary)
+                        .font(.caption)
+                        .accessibilityLabel(book.isDownloaded ? "Downloaded for offline" : "Remote book")
+                }
+            }
             Text(formatDuration(book.duration))
                 .font(.caption)
                 .foregroundColor(.secondary)

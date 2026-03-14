@@ -52,6 +52,14 @@ enum AnimationDefaults {
     static let errorToastNanoseconds: UInt64 = 2_000_000_000
 }
 
+enum PerformanceDefaults {
+    /// Debounce interval for search text updates (nanoseconds)
+    static let searchDebounceNanoseconds: UInt64 = 150_000_000  // 150ms
+    
+    /// Debounce interval for playback position saves (nanoseconds)
+    static let playbackSaveDebounceNanoseconds: UInt64 = 5_000_000_000  // 5 seconds
+}
+
 enum LayoutDefaults {
     static let horizontalPadding: CGFloat = 24
     static let contentPadding: CGFloat = 20
@@ -113,6 +121,7 @@ enum MathDefaults {
 enum StorageDefaults {
     nonisolated static let coverArtCompressionQuality: CGFloat = 0.9
     nonisolated static let fileProtectionMigrationKey = "fileProtectionMigrationComplete"
+    nonisolated static let remoteAssetMigrationKey = "remoteAssetMigrationComplete"
 }
 
 enum AccessibilityNotifications {
@@ -122,4 +131,9 @@ enum AccessibilityNotifications {
         UIAccessibility.post(notification: .announcement, argument: message)
 #endif
     }
+}
+
+enum AppConstants {
+    static let appName = "StoryCast"
+    static let supportEmail = "johnmanologlou@gmail.com"
 }

@@ -7,7 +7,7 @@ import SwiftData
 /// migrated without data loss. Any post-v1.0 schema change should add a
 /// new VersionedSchema (e.g. SchemaV2) and a corresponding MigrationPlan.
 enum SchemaV1: VersionedSchema {
-    static var versionIdentifier = Schema.Version(1, 0, 0)
+    static let versionIdentifier = Schema.Version(1, 0, 0)
 
     static var models: [any PersistentModel.Type] {
         [Book.self, Chapter.self, Folder.self]
@@ -74,18 +74,60 @@ class Book {
     var coverArtFileName: String?
     @Relationship(deleteRule: .cascade, inverse: \Chapter.book) var chapters: [Chapter] = []
     var folder: Folder?
+    
+    // MARK: - Remote Book Properties
+    var isRemote: Bool
+    var remoteItemId: String?
+    var remoteLibraryId: String?
+    var serverId: UUID?
+    var isDownloaded: Bool
+    var localCachePath: String?
+    var lastSyncDate: Date?
+    
+    // MARK: - Cached Search Fields
+    // Normalized fields for efficient search (updated when title/author changes)
+    private(set) var normalizedTitle: String = ""
+    private(set) var normalizedAuthor: String = ""
+    private(set) var searchKey: String = ""
+    
+    func updateSearchFields() {
+        normalizedTitle = Self.normalizeForSearch(title)
+        normalizedAuthor = Self.normalizeForSearch(author)
+        searchKey = normalizedAuthor.isEmpty ? normalizedTitle : "\(normalizedTitle) | \(normalizedAuthor)"
+    }
+    
+    static func normalizeForSearch(_ value: String?) -> String {
+        guard let value = value, !value.isEmpty else { return "" }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .folding(options: .diacriticInsensitive, locale: .current)
+    }
+    
+    func matchesSearch(query: String) -> Bool {
+        let normalizedQuery = Self.normalizeForSearch(query)
+        guard !normalizedQuery.isEmpty else { return true }
+        return normalizedTitle.contains(normalizedQuery) || 
+               normalizedAuthor.contains(normalizedQuery)
+    }
 
     init(
         id: UUID = UUID(),
         title: String,
         author: String? = nil,
-        localFileName: String,
+        localFileName: String = "",
         duration: Double,
         lastPlaybackPosition: Double = 0.0,
         lastPlayedDate: Date? = nil,
         isImported: Bool = false,
         folder: Folder? = nil,
-        coverArtFileName: String? = nil
+        coverArtFileName: String? = nil,
+        isRemote: Bool = false,
+        remoteItemId: String? = nil,
+        remoteLibraryId: String? = nil,
+        serverId: UUID? = nil,
+        isDownloaded: Bool = false,
+        localCachePath: String? = nil,
+        lastSyncDate: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -97,6 +139,19 @@ class Book {
         self.isImported = isImported
         self.folder = folder
         self.coverArtFileName = coverArtFileName
+        self.isRemote = isRemote
+        self.remoteItemId = remoteItemId
+        self.remoteLibraryId = remoteLibraryId
+        self.serverId = serverId
+        self.isDownloaded = isDownloaded
+        self.localCachePath = localCachePath
+        self.lastSyncDate = lastSyncDate
+        self.updateSearchFields()
+    }
+    
+    /// A book is valid when its title is non-empty after trimming whitespace.
+    var isValid: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
@@ -111,6 +166,11 @@ class Folder {
     var bookCount: Int {
         books.count
     }
+    
+    /// A folder is valid when its name is non-empty after trimming whitespace.
+    var isValid: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     init(id: UUID = UUID(), name: String, isSystem: Bool = false, sortOrder: Int = 0) {
         self.id = id
@@ -118,4 +178,36 @@ class Folder {
         self.isSystem = isSystem
         self.sortOrder = sortOrder
     }
+}
+
+// MARK: - Schema V2 (Remote Books Support)
+
+enum SchemaV2: VersionedSchema {
+    static let versionIdentifier = Schema.Version(2, 0, 0)
+    
+    static var models: [any PersistentModel.Type] {
+        [Book.self, Chapter.self, Folder.self, ABSServer.self]
+    }
+}
+
+// MARK: - Migration Plan
+
+enum StoryCastMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [SchemaV1.self, SchemaV2.self]
+    }
+    
+    static var stages: [MigrationStage] {
+        [migrateV1toV2]
+    }
+    
+    static let migrateV1toV2 = MigrationStage.custom(
+        fromVersion: SchemaV1.self,
+        toVersion: SchemaV2.self,
+        willMigrate: nil,
+        didMigrate: { context in
+            // Migration complete - no data transformation needed
+            // New properties have default values
+        }
+    )
 }

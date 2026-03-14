@@ -16,38 +16,38 @@
 			containerPortal = 528C00972F08892000A6E0F7 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 528C009E2F08892000A6E0F7;
-			remoteInfo = "StoryCast";
+			remoteInfo = StoryCast;
 		};
 		528C00B92F08892100A6E0F7 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 528C00972F08892000A6E0F7 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 528C009E2F08892000A6E0F7;
-			remoteInfo = "StoryCast";
+			remoteInfo = StoryCast;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		528C009F2F08892000A6E0F7 /* StoryCast.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StoryCast.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		528C00AE2F08892100A6E0F7 /* StoryCastTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "StoryCastTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		528C00B82F08892100A6E0F7 /* StoryCastUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "StoryCastUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		528C00AE2F08892100A6E0F7 /* StoryCastTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StoryCastTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		528C00B82F08892100A6E0F7 /* StoryCastUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StoryCastUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		52A1B2C42F0A1B2C0031E0F7 /* AppIntents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppIntents.framework; path = System/Library/Frameworks/AppIntents.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		528C00A12F08892000A6E0F7 /* StoryCast */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "StoryCast";
+			path = StoryCast;
 			sourceTree = "<group>";
 		};
 		528C00B12F08892100A6E0F7 /* StoryCastTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "StoryCastTests";
+			path = StoryCastTests;
 			sourceTree = "<group>";
 		};
 		528C00BB2F08892100A6E0F7 /* StoryCastUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "StoryCastUITests";
+			path = StoryCastUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -128,7 +128,7 @@
 			name = StoryCast;
 			packageProductDependencies = (
 			);
-			productName = "StoryCast";
+			productName = StoryCast;
 			productReference = 528C009F2F08892000A6E0F7 /* StoryCast.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -148,10 +148,10 @@
 			fileSystemSynchronizedGroups = (
 				528C00B12F08892100A6E0F7 /* StoryCastTests */,
 			);
-			name = "StoryCastTests";
+			name = StoryCastTests;
 			packageProductDependencies = (
 			);
-			productName = "StoryCastTests";
+			productName = StoryCastTests;
 			productReference = 528C00AE2F08892100A6E0F7 /* StoryCastTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
@@ -171,10 +171,10 @@
 			fileSystemSynchronizedGroups = (
 				528C00BB2F08892100A6E0F7 /* StoryCastUITests */,
 			);
-			name = "StoryCastUITests";
+			name = StoryCastUITests;
 			packageProductDependencies = (
 			);
-			productName = "StoryCastUITests";
+			productName = StoryCastUITests;
 			productReference = 528C00B82F08892100A6E0F7 /* StoryCastUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
@@ -434,8 +434,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -469,8 +468,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -490,8 +488,7 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StoryCast.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/StoryCast";
 			};
@@ -512,8 +509,7 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StoryCast.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/StoryCast";
 			};
@@ -532,8 +528,7 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = StoryCast;
 			};
@@ -552,8 +547,7 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = StoryCast;
 			};

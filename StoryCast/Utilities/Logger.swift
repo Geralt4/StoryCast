@@ -17,4 +17,6 @@ enum AppLogger {
     nonisolated static let ui = Logger(subsystem: subsystem, category: "ui")
     nonisolated static let remoteCommand = Logger(subsystem: subsystem, category: "remoteCommand")
     nonisolated static let storeKit = Logger(subsystem: subsystem, category: "storeKit")
+    nonisolated static let sync = Logger(subsystem: subsystem, category: "sync")
+    nonisolated static let network = Logger(subsystem: subsystem, category: "network")
 }

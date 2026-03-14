@@ -1,13 +1,20 @@
-import SwiftUI
 import SwiftData
-import os
+import SwiftUI
 
 struct FolderDetailView: View {
     @Environment(\.modelContext) private var modelContext
-    @State private var isSelecting = false
+    @EnvironmentObject private var importService: ImportService
+    @Query(sort: \Folder.sortOrder) private var allFolders: [Folder]
     @Query private var folderBooks: [Book]
 
     let folder: Folder
+
+    @State private var searchHandler = FolderBookSearchHandler()
+    @State private var importHandler = LibraryImportHandler()
+    @State private var coordinator = FolderDetailCoordinator()
+    @State private var actionTask: Task<Void, Never>?
+    @State private var showFolderError = false
+    @State private var folderErrorMessage = ""
 
     init(folder: Folder) {
         self.folder = folder
@@ -20,37 +27,16 @@ struct FolderDetailView: View {
         )
     }
 
-    @EnvironmentObject private var importService: ImportService
-    @State private var showFileImporter = false
-    @State private var showImportError = false
-    @State private var importErrorMessage = ""
-    @State private var showFolderError = false
-    @State private var folderErrorMessage = ""
-    @State private var searchText = ""
-
-    @State private var selectedBook: Book?
-
-    @State private var selectedBookIds: Set<UUID> = []
-    @State private var showBulkMoveToFolder = false
-    @State private var showBulkDeleteConfirmation = false
-    @State private var actionTask: Task<Void, Never>?
-    @State private var importTask: Task<Void, Never>?
-
-    private var normalizedSearchText: String {
-        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var isSearching: Bool {
-        !normalizedSearchText.isEmpty
+    private var bookActions: LibraryBookActions {
+        LibraryBookActions(modelContext: modelContext)
     }
 
     private var filteredBooks: [Book] {
-        guard isSearching else { return folderBooks }
-        return folderBooks.filter(bookMatchesSearch)
+        searchHandler.filteredBooks(from: folderBooks)
     }
 
     private var isEditing: Bool {
-        isSelecting
+        coordinator.isEditing
     }
 
     private var selectableBookIds: Set<UUID> {
@@ -58,342 +44,232 @@ struct FolderDetailView: View {
     }
 
     private var isAllSelected: Bool {
-        !selectableBookIds.isEmpty && selectedBookIds.isSuperset(of: selectableBookIds)
+        !selectableBookIds.isEmpty && coordinator.selectedBookIds.isSuperset(of: selectableBookIds)
     }
 
-    private func toggleSelectAll() {
-        if isAllSelected {
-            selectedBookIds.removeAll()
-        } else {
-            selectedBookIds = selectableBookIds
-        }
+    private var emptyStateTitle: String {
+        searchHandler.isSearching ? "No Results" : "No Books"
+    }
+
+    private var emptyStateDescription: String {
+        searchHandler.isSearching ? "Try a different search." : "This folder is empty"
     }
 
     var body: some View {
-        detailView
-    }
-
-    @ViewBuilder
-    private var detailView: some View {
-        let listView = FolderDetailListView(
+        FolderDetailListView(
             folderBooks: filteredBooks,
             isEditing: isEditing,
-            selectedBookIds: $selectedBookIds,
+            selectedBookIds: $coordinator.selectedBookIds,
             onDeleteBooks: deleteBooks,
             onSelect: { book in
-                if !isSelecting {
-                    isSelecting = true
-                }
-                if selectedBookIds.contains(book.id) {
-                    selectedBookIds.remove(book.id)
-                } else {
-                    selectedBookIds.insert(book.id)
-                }
+                coordinator.toggleSelection(for: book)
             },
             onMove: { book in
-                selectedBook = book
+                coordinator.beginMove(for: book)
             },
             onDelete: deleteBookAction,
-            emptyStateTitle: isSearching ? "No Results" : "No Books",
-            emptyStateDescription: isSearching ? "Try a different search." : "This folder is empty"
+            onDownload: { book in
+                bookActions.downloadBook(book)
+            },
+            onRemoveDownload: { book in
+                bookActions.removeDownloadedBook(book)
+            },
+            emptyStateTitle: emptyStateTitle,
+            emptyStateDescription: emptyStateDescription
         )
-        let navigationView = listView
-            .navigationTitle(folder.name)
-            .searchable(text: $searchText, prompt: "Search books")
-        let toolbarView = navigationView
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(isEditing ? "Done" : "Select") {
-                        HapticManager.impact(.light)
-                        withAnimation {
-                            if isSelecting {
-                                isSelecting = false
-                                selectedBookIds.removeAll()
-                            } else {
-                                isSelecting = true
-                            }
-                        }
+        .navigationTitle(folder.name)
+        .searchable(text: $searchHandler.searchText, prompt: "Search books")
+        .onChange(of: searchHandler.searchText) { _, _ in
+            searchHandler.updateSearchText(searchHandler.searchText, books: folderBooks)
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(isEditing ? "Done" : "Select") {
+                    HapticManager.impact(.light)
+                    withAnimation {
+                        coordinator.toggleSelectionMode()
                     }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    if !isEditing {
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                if !isEditing {
+                    Button(action: {
+                        HapticManager.impact(.light)
+                        coordinator.showFileImporter = true
+                    }) {
+                        Label("Import", systemImage: "doc.badge.plus")
+                    }
+                }
+            }
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .bottomBar) {
+                if isEditing {
+                    if !selectableBookIds.isEmpty {
                         Button(action: {
                             HapticManager.impact(.light)
-                            showFileImporter = true
+                            coordinator.toggleSelectAll(selectableBookIds: selectableBookIds)
                         }) {
-                            Label("Import", systemImage: "doc.badge.plus")
+                            Label(
+                                isAllSelected ? "Deselect All" : "Select All",
+                                systemImage: isAllSelected ? "rectangle.stack.badge.minus" : "rectangle.stack.badge.check"
+                            )
+                        }
+                        Spacer()
+                    }
+                    if !coordinator.selectedBookIds.isEmpty {
+                        Button {
+                            HapticManager.impact(.light)
+                            coordinator.showBulkMoveToFolder = true
+                        } label: {
+                            Label("Move", systemImage: "folder")
+                        }
+                        Spacer()
+                        Button(role: .destructive) {
+                            HapticManager.impact(.heavy)
+                            HapticManager.notification(.warning)
+                            coordinator.showBulkDeleteConfirmation = true
+                        } label: {
+                            Label("Delete", systemImage: "trash")
                         }
                     }
                 }
-            }
-            .toolbar {
-                ToolbarItemGroup(placement: .bottomBar) {
-                    if isEditing {
-                        if !selectableBookIds.isEmpty {
-                            Button(action: {
-                                HapticManager.impact(.light)
-                                toggleSelectAll()
-                            }) {
-                                Label(isAllSelected ? "Deselect All" : "Select All", systemImage: isAllSelected ? "rectangle.stack.badge.minus" : "rectangle.stack.badge.check")
-                            }
-                            Spacer()
-                        }
-                        if !selectedBookIds.isEmpty {
-                            Button {
-                                HapticManager.impact(.light)
-                                showBulkMoveToFolder = true
-                            } label: {
-                                Label("Move", systemImage: "folder")
-                            }
-                            Spacer()
-                            Button(role: .destructive) {
-                                HapticManager.impact(.heavy)
-                                HapticManager.notification(.warning)
-                                showBulkDeleteConfirmation = true
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                    }
-                }
-            }
-        let destinationView = toolbarView
-            .navigationDestination(for: Book.self) { book in
-                PlayerView(book: book)
-            }
-            .fileImporter(
-                isPresented: $showFileImporter,
-                allowedContentTypes: SupportedFormats.voiceBoxAudioTypes,
-                allowsMultipleSelection: true
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    importFiles(urls)
-                case .failure(let error):
-                    importErrorMessage = error.localizedDescription
-                    showImportError = true
-                }
-            }
-        let alertView = destinationView
-            .alert("Import Result", isPresented: $showImportError) {
-                Button("OK", role: .cancel) { }
-            } message: {
-                Text(importErrorMessage)
-            }
-            .alert("Library Error", isPresented: $showFolderError) {
-                Button("OK", role: .cancel) { }
-            } message: {
-                Text(folderErrorMessage)
-            }
-        let overlayView = alertView
-            .overlay {
-                if importService.isImporting {
-                    ImportProgressOverlay(importService: importService) {
-                        importService.cancelImport()
-                    }
-                }
-            }
-            .sheet(item: $selectedBook) { book in
-                MoveToFolderSheet(
-                    book: book,
-                    folders: getAllFolders(),
-                    onSave: { folder in
-                        moveBook(book, to: folder)
-                        selectedBook = nil
-                    },
-                    onCancel: {
-                        selectedBook = nil
-                    }
-                )
-            }
-            .sheet(isPresented: $showBulkMoveToFolder) {
-                BulkMoveToFolderSheet(
-                    bookIds: selectedBookIds,
-                    folders: getAllFolders(),
-                    currentFolder: folder,
-                    onSave: { folder in
-                        moveSelectedBooks(to: folder)
-                        selectedBookIds.removeAll()
-                        showBulkMoveToFolder = false
-                    },
-                    onCancel: {
-                        showBulkMoveToFolder = false
-                    }
-                )
-            }
-            .sheet(isPresented: $showBulkDeleteConfirmation) {
-                BulkDeleteConfirmationSheet(
-                    count: selectedBookIds.count,
-                    onConfirm: {
-                        actionTask?.cancel()
-                        actionTask = Task {
-                            await deleteSelectedBooks()
-                            guard !Task.isCancelled else { return }
-                            selectedBookIds.removeAll()
-                            showBulkDeleteConfirmation = false
-                        }
-                    },
-                    onCancel: {
-                        showBulkDeleteConfirmation = false
-                    }
-                )
-            }
-        let finalView = overlayView
-            .onChange(of: folderBooks.map(\.id)) { _, _ in
-                selectedBookIds = selectedBookIds.intersection(selectableBookIds)
-            }
-            .onDisappear {
-                actionTask?.cancel()
-                importTask?.cancel()
-            }
-        finalView
-    }
-
-    private func moveSelectedBooks(to folder: Folder) {
-        for bookId in selectedBookIds {
-            if let book = folderBooks.first(where: { $0.id == bookId }) {
-                book.folder = folder
             }
         }
-        do {
-            try modelContext.save()
-        } catch {
-            presentError("Failed to move books", error: error)
+        .navigationDestination(for: Book.self) { book in
+            PlayerView(book: book)
+        }
+        .fileImporter(
+            isPresented: $coordinator.showFileImporter,
+            allowedContentTypes: SupportedFormats.voiceBoxAudioTypes,
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls):
+                importHandler.importFiles(urls, to: folder, importService: importService, modelContext: modelContext)
+            case .failure(let error):
+                importHandler.importErrorMessage = error.localizedDescription
+                importHandler.showImportError = true
+            }
+        }
+        .alert("Import Result", isPresented: $importHandler.showImportError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(importHandler.importErrorMessage)
+        }
+        .alert("Library Error", isPresented: $showFolderError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(folderErrorMessage)
+        }
+        .overlay {
+            if importService.isImporting {
+                ImportProgressOverlay(importService: importService) {
+                    importHandler.cancelImport(importService: importService)
+                }
+            }
+        }
+        .sheet(item: $coordinator.selectedBook) { book in
+            MoveToFolderSheet(
+                book: book,
+                folders: allFolders,
+                onSave: { targetFolder in
+                    do {
+                        try bookActions.moveBook(book, to: targetFolder)
+                        coordinator.finishMove()
+                    } catch {
+                        presentError("Failed to move book", error: error)
+                    }
+                },
+                onCancel: {
+                    coordinator.finishMove()
+                }
+            )
+        }
+        .sheet(isPresented: $coordinator.showBulkMoveToFolder) {
+            BulkMoveToFolderSheet(
+                bookIds: coordinator.selectedBookIds,
+                folders: allFolders,
+                currentFolder: folder,
+                onSave: { targetFolder in
+                    moveSelectedBooks(to: targetFolder)
+                    coordinator.selectedBookIds.removeAll()
+                    coordinator.showBulkMoveToFolder = false
+                },
+                onCancel: {
+                    coordinator.showBulkMoveToFolder = false
+                }
+            )
+        }
+        .sheet(isPresented: $coordinator.showBulkDeleteConfirmation) {
+            BulkDeleteConfirmationSheet(
+                count: coordinator.selectedBookIds.count,
+                onConfirm: {
+                    deleteSelectedBooks()
+                },
+                onCancel: {
+                    coordinator.showBulkDeleteConfirmation = false
+                }
+            )
+        }
+        .onChange(of: folderBooks.map(\.id)) { _, _ in
+            coordinator.pruneSelection(to: selectableBookIds)
+        }
+        .onDisappear {
+            actionTask?.cancel()
+            importHandler.onDisappear()
+            searchHandler.onDisappear()
         }
     }
 
-    @MainActor
-    private func deleteSelectedBooks() async {
-        for bookId in selectedBookIds {
-            if let book = folderBooks.first(where: { $0.id == bookId }) {
-                await deleteBook(book, saveChanges: false)
-            }
-        }
-        do {
-            try modelContext.save()
-        } catch {
-            presentError("Failed to delete books", error: error)
-        }
-    }
+    private func moveSelectedBooks(to targetFolder: Folder) {
+        for bookId in coordinator.selectedBookIds {
+            guard let book = folderBooks.first(where: { $0.id == bookId }) else { continue }
 
-    private func importFiles(_ urls: [URL]) {
-        importTask?.cancel()
-        importTask = Task {
-            await importService.importFilesToFolder(urls: urls, folderId: folder.id, container: modelContext.container)
-            guard !Task.isCancelled else { return }
-            let failedCount = importService.importErrors.count
-            let skippedCount = importService.skippedDuplicateFileNames.count
-            let importedCount = importService.completedFiles
-
-            if failedCount > 0 {
-                importErrorMessage = "Failed to import \(failedCount) files."
-                if skippedCount > 0 {
-                    let suffix = skippedCount == 1 ? "file is" : "files are"
-                    importErrorMessage += " \(skippedCount) \(suffix) already in your library."
-                }
-                showImportError = true
+            do {
+                try bookActions.moveBook(book, to: targetFolder)
+            } catch {
+                presentError("Failed to move books", error: error)
                 return
             }
+        }
+    }
 
-            if skippedCount > 0 {
-                if importedCount > 0 {
-                    let importedSuffix = importedCount == 1 ? "file" : "files"
-                    let skippedSuffix = skippedCount == 1 ? "file is" : "files are"
-                    importErrorMessage = "Imported \(importedCount) \(importedSuffix). \(skippedCount) \(skippedSuffix) already in your library."
-                } else {
-                    let skippedSuffix = skippedCount == 1 ? "file is" : "files are"
-                    importErrorMessage = "No new files imported. \(skippedCount) \(skippedSuffix) already in your library."
-                }
-                showImportError = true
-            }
+    private func deleteSelectedBooks() {
+        let books = folderBooks.filter { coordinator.selectedBookIds.contains($0.id) }
+        deleteBooks(books) {
+            coordinator.selectedBookIds.removeAll()
+            coordinator.showBulkDeleteConfirmation = false
         }
     }
-    
-    private func getAllFolders() -> [Folder] {
-        let request = FetchDescriptor<Folder>(sortBy: [SortDescriptor(\.sortOrder)])
-        do {
-            return try modelContext.fetch(request)
-        } catch {
-            presentError("Failed to load folders", error: error)
-            return []
-        }
-    }
-    
+
     private func deleteBooks(offsets: IndexSet) {
-        actionTask?.cancel()
-        actionTask = Task {
-            await deleteBooksAsync(offsets: offsets)
-        }
-    }
-    
-    private func deleteBookAction(_ book: Book) {
-        actionTask?.cancel()
-        actionTask = Task {
-            await deleteBook(book)
-        }
-    }
-
-    @MainActor
-    private func deleteBooksAsync(offsets: IndexSet) async {
-        let booksToDelete: [Book] = offsets.compactMap { index in
+        let books: [Book] = offsets.compactMap { index in
             guard filteredBooks.indices.contains(index) else { return nil }
             return filteredBooks[index]
         }
-        for book in booksToDelete {
-            await deleteBook(book, saveChanges: false)
-        }
-do {
-            try modelContext.save()
-} catch {
-            presentError("Failed to delete books", error: error)
-        }
+        deleteBooks(books)
     }
 
-    @MainActor
-    private func deleteBook(_ book: Book, saveChanges: Bool = true) async {
-        let audioURL = StorageManager.shared.storyCastLibraryURL
-            .appendingPathComponent(book.localFileName)
-        do {
-            try FileManager.default.removeItem(at: audioURL)
-        } catch {
-            AppLogger.ui.error("Error deleting audio file: \(error.localizedDescription, privacy: .private)")
-        }
-        if let coverArtFileName = book.coverArtFileName {
-            await StorageManager.shared.deleteCoverArt(fileName: coverArtFileName)
-        }
-        modelContext.delete(book)
-        if saveChanges {
-            do {
-                try modelContext.save()
-            } catch {
-                presentError("Failed to delete book", error: error)
-            }
-        }
+    private func deleteBookAction(_ book: Book) {
+        deleteBooks([book])
     }
-    
-    private func moveBook(_ book: Book, to folder: Folder) {
-        book.folder = folder
-        do {
-            try modelContext.save()
-        } catch {
-            presentError("Failed to move book", error: error)
+
+    private func deleteBooks(_ books: [Book], onSuccess: (() -> Void)? = nil) {
+        actionTask?.cancel()
+        actionTask = Task {
+            do {
+                try await bookActions.deleteBooks(books)
+                onSuccess?()
+            } catch {
+                presentError(books.count == 1 ? "Failed to delete book" : "Failed to delete books", error: error)
+            }
         }
     }
 
     private func presentError(_ message: String, error: Error) {
         folderErrorMessage = "\(message): \(error.localizedDescription)"
         showFolderError = true
-    }
-
-    private func bookMatchesSearch(_ book: Book) -> Bool {
-        let query = normalizedSearchText.lowercased()
-        if book.title.lowercased().contains(query) {
-            return true
-        }
-        if let author = book.author?.lowercased(), author.contains(query) {
-            return true
-        }
-        return false
     }
 }
 
