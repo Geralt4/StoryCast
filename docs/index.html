@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Privacy Policy - Audiobook Player</title>
+    <title>Privacy Policy - StoryCast</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -48,14 +48,14 @@
     </style>
 </head>
 <body>
-    <h1>Audiobook Player - Privacy Policy</h1>
-    <p class="effective-date">Effective Date: January 29, 2026</p>
+    <h1>StoryCast - Privacy Policy</h1>
+    <p class="effective-date">Effective Date: March 14, 2026</p>
 
-    <p>Audiobook Player ("the App") is a privacy-focused audio player application developed with a commitment to user privacy. This policy explains our data practices.</p>
+    <p>StoryCast ("the App") is a privacy-focused audiobook player for iOS with optional Audiobookshelf server integration. This policy explains our data practices.</p>
 
     <div class="highlight">
-        <h2>NO DATA COLLECTION</h2>
-        <p>We DO NOT collect, store, or transmit any personal information or usage data. The App operates entirely on your device with zero data collection.</p>
+        <h2>NO DATA COLLECTION BY US</h2>
+        <p>We DO NOT collect, store, or transmit any personal information or usage data to our servers. The App does not include analytics, tracking, or advertising SDKs.</p>
     </div>
 
     <h2>What We Don't Collect:</h2>
@@ -65,7 +65,6 @@
         <li>Location data</li>
         <li>Usage analytics or telemetry</li>
         <li>Audio content metadata</li>
-        <li>Network data or connection information</li>
         <li>Contact information</li>
         <li>Payment information</li>
     </ul>
@@ -78,16 +77,25 @@
         <li>Library organization (folders, bookmarks)</li>
         <li>App preferences</li>
     </ul>
-    <p>This data is stored locally using iOS's standard storage mechanisms (File System and SwiftData) and is never transmitted externally.</p>
+    <p>This data is stored locally using iOS's standard storage mechanisms (File System and SwiftData).</p>
 
-    <h2>NO NETWORK CONNECTIVITY</h2>
-    <p>The App does not require internet access for its core functionality. The only network features are:</p>
+    <h2>AUDIOBOOKSHELF INTEGRATION</h2>
+    <p>StoryCast can optionally connect to your self-hosted Audiobookshelf server. This feature is entirely user-initiated and controlled:</p>
     <ul>
-        <li>Importing audiobook files from local storage (File Importer)</li>
-        <li>AirPlay audio output (user-controlled device selection)</li>
-        <li>Background audio playback (system feature)</li>
+        <li><strong>Your Server, Your Data:</strong> Audiobookshelf is self-hosted software. Any data exchanged is between your device and your own server.</li>
+        <li><strong>Optional Feature:</strong> You can use StoryCast entirely offline with locally imported audiobooks.</li>
+        <li><strong>Credentials Stored Locally:</strong> Server credentials are stored securely on your device using iOS Keychain and are never transmitted elsewhere.</li>
+        <li><strong>No Proxy:</strong> Connections to your Audiobookshelf server are direct; StoryCast does not act as an intermediary.</li>
     </ul>
-    <p>These features do not transmit any data to external servers.</p>
+
+    <h2>NETWORK CONNECTIVITY</h2>
+    <p>Network access is only used when you choose to connect to an Audiobookshelf server:</p>
+    <ul>
+        <li><strong>Audiobookshelf Server:</strong> To sync your library and stream audiobooks from your own server (user-initiated)</li>
+        <li><strong>AirPlay:</strong> To stream audio to AirPlay-compatible devices (user-controlled)</li>
+        <li><strong>Import:</strong> Importing audiobook files from cloud storage providers (user-initiated)</li>
+    </ul>
+    <p>The app does not make any network requests to third-party servers for analytics, advertising, or tracking purposes.</p>
 
     <h2>YOUR CONTROL OVER DATA</h2>
     <p>You have complete control over your data:</p>
@@ -95,13 +103,14 @@
         <li><strong>Delete Files:</strong> Remove audiobooks at any time via the App's interface</li>
         <li><strong>Clear All Data:</strong> Uninstalling the App removes all associated data</li>
         <li><strong>No Accounts:</strong> The App does not require user accounts or registration</li>
+        <li><strong>Disconnect Servers:</strong> You can remove any Audiobookshelf server connection at any time</li>
     </ul>
 
     <h2>THIRD-PARTY SERVICES</h2>
-    <p>The App does not integrate with any third-party services that would collect data.</p>
+    <p>StoryCast does not integrate with any third-party analytics, advertising, or data collection services. The only external service the app can connect to is your own Audiobookshelf server, which you configure and control.</p>
 
     <h2>CHILDREN'S PRIVACY</h2>
-    <p>Since we collect no data, we do not knowingly collect personal information from children under 13. The App is safe for all ages as it operates entirely locally.</p>
+    <p>Since we collect no data, we do not knowingly collect personal information from children under 13. The App is safe for all ages.</p>
 
     <h2>CHANGES TO THIS POLICY</h2>
     <p>We may update this Privacy Policy as the App evolves. Any changes will be reflected in updated documentation.</p>
@@ -117,12 +126,12 @@
     <p>In App Store Connect, we declare:</p>
     <ul>
         <li><strong>Data Not Collected:</strong> All categories (Health & Fitness, Financial Info, etc.)</li>
-        <li><strong>Purpose:</strong> No purpose as no data is collected</li>
+        <li><strong>Purpose:</strong> No purpose as no data is collected by us</li>
     </ul>
 
     <div class="highlight">
         <h2>ACKNOWLEDGMENT</h2>
-        <p>By using the Audiobook Player App, you acknowledge that the App operates entirely on your device with no data collection or transmission. We believe in privacy by design and default.</p>
+        <p>By using StoryCast, you acknowledge that the App respects your privacy by design. When connecting to your own Audiobookshelf server, that connection and any associated data is entirely under your control.</p>
     </div>
 
     <hr>
