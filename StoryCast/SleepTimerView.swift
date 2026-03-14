@@ -67,8 +67,6 @@ struct SleepTimerView: View {
                     if !book.chapters.isEmpty {
                         Button(action: {
                             // Get current chapter end time
-                            // This would need to be passed in or accessed via Book context
-                            // For now, we'll just show that this mode is available
                             if let currentBook = getCurrentBook(),
                                let currentChapter = getCurrentChapter(for: currentBook) {
                                 HapticManager.notification(.success)
@@ -128,8 +126,6 @@ struct SleepTimerView: View {
         .presentationDetents([.medium])
     }
     
-    // Placeholder functions - these would need actual implementation
-    // with proper Book and Chapter context passed to the view
     private func getCurrentBook() -> Book? {
         book
     }

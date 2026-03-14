@@ -1,10 +1,14 @@
 import SwiftUI
+import SwiftData
 
 struct SettingsView: View {
     // Load saved settings
     @State private var playbackSettings = PlaybackSettings.load()
     @State private var sleepTimerSettings = SleepTimerSettings.load()
     @AppStorage("appearanceMode") private var appearanceModeRaw: String = AppearanceMode.automatic.rawValue
+    
+    // Server configuration
+    @Query(sort: \ABSServer.createdAt) private var servers: [ABSServer]
 
     var body: some View {
         NavigationStack {
@@ -81,6 +85,21 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
+                Section(header: Text("Audiobookshelf")) {
+                    NavigationLink(destination: ServerListView()) {
+                        HStack {
+                            Image(systemName: "server.rack")
+                                .foregroundColor(.blue)
+                            Text("Servers")
+                            Spacer()
+                            if !servers.isEmpty {
+                                Text("\(servers.count)")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+
                 Section(header: Text("About")) {
                     HStack {
                         Text("Version")
@@ -140,7 +159,7 @@ struct SettingsView: View {
     }
 
     private func openSupportEmail() {
-        guard let url = URL(string: "mailto:johnmanologlou@gmail.com?subject=StoryCast%20-%20Support&body=\(emailBody())") else {
+        guard let url = URL(string: "mailto:\(AppConstants.supportEmail)?subject=StoryCast%20-%20Support&body=\(emailBody())") else {
             return
         }
         UIApplication.shared.open(url)

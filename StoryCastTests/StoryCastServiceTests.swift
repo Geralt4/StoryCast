@@ -8,7 +8,7 @@ import UIKit
 #endif
 @testable import StoryCast
 
-final class StoryCastServiceTests: XCTestCase {
+nonisolated final class StoryCastServiceTests: XCTestCase {
     private var tempURLs: [URL] = []
 
     override func tearDownWithError() throws {
@@ -22,29 +22,24 @@ final class StoryCastServiceTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testAudioPlayerServiceLoadsAudio() async throws {
         let fileURL = try makeTemporaryAudioFile()
         let expectation = XCTestExpectation(description: "Loads audio duration")
-        let audioPlayer = await MainActor.run { AudioPlayerService.shared }
+        let audioPlayer = AudioPlayerService.shared
         var cancellable: AnyCancellable?
 
-        cancellable = await MainActor.run {
-            audioPlayer.$duration.dropFirst().sink { duration in
-                if duration > 0 {
-                    expectation.fulfill()
-                }
+        cancellable = audioPlayer.$duration.dropFirst().sink { duration in
+            if duration > 0 {
+                expectation.fulfill()
             }
         }
 
-        await MainActor.run {
-            audioPlayer.loadAudio(url: fileURL, title: "Test Audio", duration: 10.0, seekTo: 0)
-        }
+        audioPlayer.loadAudio(url: fileURL, title: "Test Audio", duration: 10.0, seekTo: 0)
         await fulfillment(of: [expectation], timeout: 3)
         cancellable?.cancel()
-        await MainActor.run {
-            XCTAssertEqual(audioPlayer.currentURL, fileURL)
-            XCTAssertGreaterThan(audioPlayer.duration, 0)
-        }
+        XCTAssertEqual(audioPlayer.currentURL, fileURL)
+        XCTAssertGreaterThan(audioPlayer.duration, 0)
     }
 
     func testSleepTimerServiceStartAndCancel() async {
@@ -85,6 +80,72 @@ final class StoryCastServiceTests: XCTestCase {
             await storageManager.deleteCoverArt(fileName: coverFileName)
             XCTAssertFalse(FileManager.default.fileExists(atPath: coverURL.path))
         }
+    }
+
+    func testURLValidatorNormalizesHTTPSBaseURL() throws {
+        let normalized = try AudiobookshelfURLValidator.normalizedBaseURLString(from: "abs.example.com:13378/")
+        XCTAssertEqual(normalized, "https://abs.example.com:13378")
+    }
+
+    func testURLValidatorRejectsHTTPBaseURL() {
+        XCTAssertThrowsError(try AudiobookshelfURLValidator.normalizedBaseURLString(from: "http://abs.example.com")) { error in
+            guard case APIError.insecureConnection = error else {
+                return XCTFail("Expected insecure connection error")
+            }
+        }
+    }
+
+    func testURLValidatorRejectsBaseURLWithPath() {
+        XCTAssertThrowsError(try AudiobookshelfURLValidator.normalizedBaseURLString(from: "https://abs.example.com/library")) { error in
+            guard case APIError.invalidURL = error else {
+                return XCTFail("Expected invalid URL error")
+            }
+        }
+    }
+
+    func testStreamingURLAllowsOnlySameOriginHTTPS() throws {
+        let url = try AudiobookshelfURLValidator.validatedStreamingURL(
+            baseURL: "https://abs.example.com:13378",
+            contentURL: "/api/items/123/file.mp3"
+        )
+
+        XCTAssertEqual(url.absoluteString, "https://abs.example.com:13378/api/items/123/file.mp3")
+    }
+
+    func testStreamingURLRejectsTokenQueryAndCrossOriginURLs() {
+        XCTAssertThrowsError(
+            try AudiobookshelfURLValidator.validatedStreamingURL(
+                baseURL: "https://abs.example.com",
+                contentURL: "https://evil.example.com/file.mp3"
+            )
+        ) { error in
+            guard case APIError.invalidURL = error else {
+                return XCTFail("Expected invalid URL error for cross-origin stream")
+            }
+        }
+
+        XCTAssertThrowsError(
+            try AudiobookshelfURLValidator.validatedStreamingURL(
+                baseURL: "https://abs.example.com",
+                contentURL: "/api/items/file.mp3?token=secret"
+            )
+        ) { error in
+            guard case APIError.invalidURL = error else {
+                return XCTFail("Expected invalid URL error for token query")
+            }
+        }
+    }
+
+    @MainActor
+    func testAuthenticatedStreamUsesAuthorizationHeaderOnly() throws {
+        let stream = AuthenticatedStream(
+            url: URL(string: "https://abs.example.com/file.mp3")!,
+            headers: ["Authorization": "Bearer token123"]
+        )
+
+        let request = stream.makeRequest()
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer token123")
+        XCTAssertNil(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems)
     }
 
     @MainActor

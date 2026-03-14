@@ -79,13 +79,23 @@ class MetadataChapterExtractor {
 
         guard !chapterItems.isEmpty else { return [] }
 
-        let assetDuration = (try? await asset.load(.duration).seconds) ?? 0
+        let assetDuration: Double
+        do {
+            assetDuration = try await asset.load(.duration).seconds
+        } catch {
+            AppLogger.metadata.debug("Could not load asset duration for chapter extraction: \(error.localizedDescription, privacy: .private)")
+            assetDuration = 0
+        }
         var parsedChapters: [ParsedID3Chapter] = []
 
         for item in chapterItems {
-            guard let data = try? await item.load(.dataValue) else { continue }
-            if let parsed = parseID3ChapterFrame(data) {
-                parsedChapters.append(parsed)
+            do {
+                guard let data = try await item.load(.dataValue) else { continue }
+                if let parsed = parseID3ChapterFrame(data) {
+                    parsedChapters.append(parsed)
+                }
+            } catch {
+                AppLogger.metadata.debug("Could not load chapter data: \(error.localizedDescription, privacy: .private)")
             }
         }
 

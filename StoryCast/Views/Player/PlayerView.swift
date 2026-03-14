@@ -13,6 +13,7 @@ struct PlayerView: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var audioPlayer = AudioPlayerService.shared
     @ObservedObject private var sleepTimer = SleepTimerService.shared
+    @ObservedObject private var sessionManager = PlaybackSessionManager.shared
     
     // UI State
     @State private var showSpeedPicker = false
@@ -31,6 +32,15 @@ struct PlayerView: View {
     @State private var cachedSortedChapters: [Chapter]
     @State private var chapterPlaybackSession: ChapterPlaybackSession?
     @State private var chapterTransitionLockUntil: Date?
+    
+    // Remote playback state
+    @State private var remotePlaybackTask: Task<Void, Never>?
+    @State private var showRemoteServerError = false
+    @State private var remoteServerErrorMessage = ""
+    
+    // Performance optimizations
+    @State private var debouncedSaveTask: Task<Void, Never>?
+    @State private var lastSavedPosition: Double = -1.0
 
     private struct ChapterBoundary {
         let title: String
@@ -54,7 +64,7 @@ struct PlayerView: View {
             return
         }
 
-        let coverArtURL = StorageManager.shared.coverArtURL(for: fileName)
+        let coverArtURL = StorageManager.shared.coverArtURL(for: fileName, isRemote: book.isRemote)
         let image = await CoverArtCache.shared.image(for: fileName, url: coverArtURL)
 
         await MainActor.run {
@@ -111,7 +121,49 @@ struct PlayerView: View {
     }
 
     private var bookAudioURL: URL {
-        StorageManager.shared.storyCastLibraryURL.appendingPathComponent(book.localFileName)
+        if book.isRemote {
+            // If downloaded, play from local cache
+            if book.isDownloaded, let cachePath = book.localCachePath {
+                return StorageManager.shared.remoteAudioCacheURL(for: cachePath)
+            }
+            // Otherwise, will stream via session (placeholder URL)
+            return URL(string: "about:blank")!
+        }
+        return StorageManager.shared.storyCastLibraryURL.appendingPathComponent(book.localFileName)
+    }
+
+    private var usesRemoteStreaming: Bool {
+        book.isRemote && !book.isDownloaded
+    }
+
+    private func isCurrentBookLoaded(expectedURL: URL? = nil) -> Bool {
+        if usesRemoteStreaming {
+            return sessionManager.isCurrentSession(for: book)
+        }
+
+        return audioPlayer.currentURL == (expectedURL ?? bookAudioURL)
+    }
+    
+    /// Fetches the server configuration for a remote book
+    private func fetchServer(for serverId: UUID?) -> ABSServer? {
+        guard let serverId = serverId else { return nil }
+        let descriptor = FetchDescriptor<ABSServer>(
+            predicate: #Predicate { $0.id == serverId }
+        )
+        do {
+            return try modelContext.fetch(descriptor).first
+        } catch {
+            AppLogger.network.error("Failed to fetch server for remote playback: \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
+    }
+    
+    /// Starts a remote playback session and returns the authenticated stream
+    private func startRemotePlaybackSession() async throws -> AuthenticatedStream {
+        guard let server = fetchServer(for: book.serverId) else {
+            throw APIError.noActiveServer
+        }
+        return try await sessionManager.startSession(for: book, server: server)
     }
 
     var body: some View {
@@ -150,12 +202,7 @@ struct PlayerView: View {
                             if !editing {
                                 clearChapterPlaybackSession()
                                 audioPlayer.seek(to: sliderValue)
-                                book.lastPlaybackPosition = sliderValue
-                                do {
-                                    try modelContext.save()
-                                } catch {
-                                    presentPlaybackSaveError("Couldn't save playback position.")
-                                }
+                                persistPlaybackPosition(sliderValue, errorMessage: "Couldn't save playback position.", forceImmediate: true)
                             }
                         }
                     )
@@ -200,26 +247,55 @@ struct PlayerView: View {
             refreshPlaybackSettings()
             updateSortedChapters()
             let audioURL = bookAudioURL
-            if audioPlayer.isPlaying, audioPlayer.currentURL == audioURL {
+            if audioPlayer.isPlaying, isCurrentBookLoaded(expectedURL: audioURL) {
                 updateLastPlayedDate()
             }
-            if audioPlayer.currentURL != bookAudioURL {
+            if !isCurrentBookLoaded(expectedURL: audioURL) {
                 // Cancel sleep timer when switching to a different book
                 // The timer is global and would otherwise carry over, firing
                 // against the wrong book (especially problematic in end-of-chapter mode).
                 if sleepTimer.isActive {
                     sleepTimer.cancel()
                 }
-                // Check if file exists before loading
-                Task { @MainActor in
-                    let fileExists = await Task.detached(priority: .utility) {
-                        FileManager.default.fileExists(atPath: audioURL.path)
-                    }.value
-                    guard audioPlayer.currentURL != audioURL else { return }
-                    if fileExists {
-                        audioPlayer.loadAudio(url: audioURL, title: book.title, duration: safeDuration, seekTo: book.lastPlaybackPosition)
-                    } else {
-                        showMissingFileAlert = true
+                
+                // Cancel any previous remote playback task
+                remotePlaybackTask?.cancel()
+                
+                // Handle remote vs local books
+                // If remote and downloaded, play from local cache like a local book
+                if book.isRemote && !book.isDownloaded {
+                    // For remote books not downloaded, start a streaming session
+                    remotePlaybackTask = Task { @MainActor in
+                        do {
+                            let stream = try await startRemotePlaybackSession()
+                            guard !Task.isCancelled else { return }
+                            audioPlayer.loadAuthenticatedAudio(stream: stream, title: book.title, duration: safeDuration, seekTo: book.lastPlaybackPosition)
+                        } catch APIError.noActiveServer {
+                            showRemoteServerError = true
+                            remoteServerErrorMessage = "Server not found. Please check your Audiobookshelf server configuration."
+                        } catch APIError.tokenMissing {
+                            showRemoteServerError = true
+                            remoteServerErrorMessage = "Authentication failed. Please log in to your Audiobookshelf server again."
+                        } catch APIError.serverUnreachable {
+                            showRemoteServerError = true
+                            remoteServerErrorMessage = "Server is unreachable. Please check your network connection and try again."
+                        } catch {
+                            showRemoteServerError = true
+                            remoteServerErrorMessage = error.localizedDescription
+                        }
+                    }
+                } else {
+                    // For local books, check if file exists before loading
+                    Task { @MainActor in
+                        let fileExists = await Task.detached(priority: .utility) {
+                            FileManager.default.fileExists(atPath: audioURL.path)
+                        }.value
+                        guard audioPlayer.currentURL != audioURL else { return }
+                        if fileExists {
+                            audioPlayer.loadAudio(url: audioURL, title: book.title, duration: safeDuration, seekTo: book.lastPlaybackPosition)
+                        } else {
+                            showMissingFileAlert = true
+                        }
                     }
                 }
             }
@@ -229,12 +305,12 @@ struct PlayerView: View {
             coverArtTask = Task { @MainActor in
                 await loadCoverArt()
                 guard !Task.isCancelled else { return }
-                guard audioPlayer.currentURL == audioURL else { return }
+                guard isCurrentBookLoaded(expectedURL: audioURL) else { return }
                 audioPlayer.updateNowPlayingInfo(title: book.title, duration: safeDuration, currentTime: audioPlayer.currentTime, artwork: coverArtUIImage)
             }
 
-            // Lazy extract embedded chapters if none exist
-            if book.chapters.isEmpty {
+            // Lazy extract embedded chapters if none exist (for local and downloaded books)
+            if (!book.isRemote || book.isDownloaded) && book.chapters.isEmpty {
                 chapterExtractionTask?.cancel()
                 chapterExtractionTask = Task { @MainActor in
                     guard !Task.isCancelled else { return }
@@ -284,14 +360,16 @@ struct PlayerView: View {
             coverArtTask?.cancel()
             chapterExtractionTask?.cancel()
             playbackSaveErrorTask?.cancel()
+            remotePlaybackTask?.cancel()
             clearChapterPlaybackSession()
             // Save playback position only if this book is still loaded
-            guard audioPlayer.currentURL == bookAudioURL else { return }
-            book.lastPlaybackPosition = audioPlayer.currentTime
-            do {
-                try modelContext.save()
-            } catch {
-                presentPlaybackSaveError("Couldn't save playback position.")
+            guard isCurrentBookLoaded() else { return }
+            forceSavePlaybackPosition(audioPlayer.currentTime, errorMessage: "Couldn't save playback position.")
+            // Close remote session if this was a remote book
+            if book.isRemote {
+                Task {
+                    await sessionManager.closeCurrentSession()
+                }
             }
         }
         .onReceive(audioPlayer.$currentTime) { newValue in
@@ -299,19 +377,26 @@ struct PlayerView: View {
                 sliderValue = min(max(newValue, 0), max(safeDuration, MathDefaults.minDurationSafetyValue))
             }
             handleChapterBoundaryIfNeeded(currentTime: newValue)
+            // Debounce save playback position during active playback
+            debouncedSavePlaybackPosition(newValue)
         }
         .onReceive(audioPlayer.$playbackDidReachEnd) { didReachEnd in
             guard didReachEnd else { return }
             handlePlaybackEnd()
         }
         .onChange(of: audioPlayer.isPlaying) { _, isPlaying in
-            guard audioPlayer.currentURL == bookAudioURL else { return }
+            guard isCurrentBookLoaded() else { return }
             if isPlaying {
                 updateLastPlayedDate()
                 AccessibilityNotifications.announce("Playing \(book.title)")
             } else {
                 AccessibilityNotifications.announce("Paused")
             }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .inactive || newPhase == .background else { return }
+            guard isCurrentBookLoaded() else { return }
+            forceSavePlaybackPosition(audioPlayer.currentTime, errorMessage: "Couldn't save playback position.")
         }
         .onChange(of: book.chapters.count) { _, _ in
             updateSortedChapters()
@@ -323,6 +408,11 @@ struct PlayerView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text("The audio file for this book could not be found. Re-import the book to listen.")
+        }
+        .alert("Playback Error", isPresented: $showRemoteServerError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(remoteServerErrorMessage)
         }
         .sheet(isPresented: $showChapterList) {
             ChapterListView(book: book, onChapterSelected: { chapters, selectedIndex in
@@ -354,15 +444,14 @@ struct PlayerView: View {
         clearChapterPlaybackSession()
         audioPlayer.pause()
         // Mark the book's position at the end so it shows as fully played
-        persistPlaybackPosition(book.duration, errorMessage: "Couldn't save completed playback position.")
+        persistPlaybackPosition(book.duration, errorMessage: "Couldn't save completed playback position.", forceImmediate: true)
     }
 
-    private func persistPlaybackPosition(_ position: Double, errorMessage: String) {
-        book.lastPlaybackPosition = position
-        do {
-            try modelContext.save()
-        } catch {
-            presentPlaybackSaveError(errorMessage)
+    private func persistPlaybackPosition(_ position: Double, errorMessage: String, forceImmediate: Bool = false) {
+        if forceImmediate {
+            forceSavePlaybackPosition(position, errorMessage: errorMessage)
+        } else {
+            debouncedSavePlaybackPosition(position)
         }
     }
 
@@ -384,7 +473,7 @@ struct PlayerView: View {
     }
 
     private func handleChapterBoundaryIfNeeded(currentTime: Double) {
-        guard audioPlayer.currentURL == bookAudioURL else {
+        guard isCurrentBookLoaded() else {
             clearChapterPlaybackSession()
             return
         }
@@ -455,7 +544,72 @@ struct PlayerView: View {
     }
 
     private func chapterAt(time: Double) -> Chapter? {
-        sortedChapters.first { time >= $0.startTime && time < $0.endTime }
+        return binarySearchChapter(at: time)
+    }
+    
+    private func binarySearchChapter(at time: Double) -> Chapter? {
+        guard !sortedChapters.isEmpty else { return nil }
+        
+        var low = 0
+        var high = sortedChapters.count - 1
+        
+        while low <= high {
+            let mid = (low + high) / 2
+            let chapter = sortedChapters[mid]
+            
+            if time < chapter.startTime {
+                high = mid - 1
+            } else if time >= chapter.endTime {
+                low = mid + 1
+            } else {
+                return chapter
+            }
+        }
+        
+        // Return last chapter if time is beyond end
+        if let lastChapter = sortedChapters.last, time >= lastChapter.startTime {
+            return lastChapter
+        }
+        
+        return nil
+    }
+    
+    private func debouncedSavePlaybackPosition(_ position: Double) {
+        // Cancel any pending save
+        debouncedSaveTask?.cancel()
+        
+        // Debounce save during active playback
+        debouncedSaveTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: PerformanceDefaults.playbackSaveDebounceNanoseconds)
+                guard !Task.isCancelled else { return }
+                
+                // Only save if position changed significantly (> 1 second)
+                guard abs(position - lastSavedPosition) > 1.0 else { return }
+                
+                book.lastPlaybackPosition = position
+                try modelContext.save()
+                lastSavedPosition = position
+            } catch is CancellationError {
+                // Expected when debounced save is superseded
+            } catch {
+                AppLogger.playback.error("Failed to save playback position: \(error.localizedDescription, privacy: .private)")
+            }
+        }
+    }
+    
+    private func forceSavePlaybackPosition(_ position: Double, errorMessage: String) {
+        // Cancel debounced task to avoid duplicate saves
+        debouncedSaveTask?.cancel()
+        debouncedSaveTask = nil
+        
+        book.lastPlaybackPosition = position
+        do {
+            try modelContext.save()
+            lastSavedPosition = position
+        } catch {
+            presentPlaybackSaveError(errorMessage)
+        }
     }
 
 

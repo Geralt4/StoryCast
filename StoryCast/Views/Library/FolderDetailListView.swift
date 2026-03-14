@@ -8,6 +8,8 @@ struct FolderDetailListView: View {
     let onSelect: (Book) -> Void
     let onMove: (Book) -> Void
     let onDelete: (Book) -> Void
+    let onDownload: (Book) -> Void
+    let onRemoveDownload: (Book) -> Void
     let emptyStateTitle: String
     let emptyStateDescription: String
 
@@ -27,7 +29,9 @@ struct FolderDetailListView: View {
                         isSelected: selectedBookIds.contains(book.id),
                         onSelect: { onSelect(book) },
                         onMove: { onMove(book) },
-                        onDelete: { onDelete(book) }
+                        onDelete: { onDelete(book) },
+                        onDownload: { onDownload(book) },
+                        onRemoveDownload: { onRemoveDownload(book) }
                     )
                 }
                 .onDelete(perform: isEditing ? nil : onDeleteBooks)
