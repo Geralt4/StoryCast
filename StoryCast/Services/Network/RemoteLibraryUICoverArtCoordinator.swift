@@ -2,6 +2,35 @@ import Foundation
 import SwiftData
 import os
 
+// MARK: - Cover Art Failure
+
+/// Tracks a failed cover art download for a specific book, including retry state.
+struct CoverArtFailure: Sendable {
+    let bookId: UUID
+    let serverId: UUID
+    var compoundKey: String { "\(serverId.uuidString)_\(bookId.uuidString)" }
+    let itemId: String
+    let errorDescription: String
+    let timestamp: Date
+    let retryCount: Int
+
+    static let maxRetries: Int = 3
+
+    /// Exponential backoff delay (seconds): 2s → 4s → 8s.
+    var backoffDelay: TimeInterval { pow(2.0, Double(retryCount)) }
+
+    var isExhausted: Bool { retryCount >= Self.maxRetries }
+
+    init(bookId: UUID, serverId: UUID, itemId: String, error: Error, timestamp: Date, retryCount: Int) {
+        self.bookId = bookId
+        self.serverId = serverId
+        self.itemId = itemId
+        self.errorDescription = error.localizedDescription
+        self.timestamp = timestamp
+        self.retryCount = retryCount
+    }
+}
+
 @MainActor
 final class RemoteLibraryUICoverArtCoordinator {
     static let shared = RemoteLibraryUICoverArtCoordinator()

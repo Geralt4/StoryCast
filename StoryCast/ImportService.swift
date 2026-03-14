@@ -8,8 +8,6 @@ import os
 final class ImportService: ObservableObject {
     static let shared = ImportService()
 
-    private init() {}
-
     @Published var isImporting = false
     @Published var totalFiles: Int = 0
     @Published var completedFiles: Int = 0
@@ -21,13 +19,24 @@ final class ImportService: ObservableObject {
     @Published var failedImports: [FailedImport] = []
 
     private var currentImportTask: Task<Void, Error>?
-    private var retryTasks: [String: Task<Void, Never>] = [:]
     private var importWasCancelled = false
+    private(set) var retryManager: ImportRetryManager!
 
 #if DEBUG
     var debugStageDelayNanoseconds: UInt64?
     private(set) var debugDidStageFile = false
 #endif
+
+    private init() {
+        self.retryManager = ImportRetryManager(
+            performImport: { [weak self] url, folderId, container, retryCount in
+                guard let self else { return false }
+                return try await self.performImport(url: url, folderId: folderId, container: container, retryCountOnFailure: retryCount, shouldScheduleAutoRetry: true)
+            },
+            getFailedImports: { [weak self] in self?.failedImports ?? [] },
+            updateFailedImports: { [weak self] in self?.failedImports = $0 }
+        )
+    }
 
     func importFiles(urls: [URL], container: ModelContainer) async {
         await importFilesToFolder(urls: urls, folderId: nil, container: container)
@@ -93,8 +102,7 @@ final class ImportService: ObservableObject {
         importWasCancelled = true
         currentImportTask?.cancel()
         currentImportTask = nil
-        retryTasks.values.forEach { $0.cancel() }
-        retryTasks.removeAll()
+        retryManager.cancelAllRetryTasks()
         isImporting = false
         currentPhase = .idle
         downloadProgress = 0.0
@@ -103,93 +111,73 @@ final class ImportService: ObservableObject {
     }
 
     func importFile(url: URL, container: ModelContainer) async throws {
-        importWasCancelled = false
-        currentImportTask?.cancel()
+        await importFilesToFolder(urls: [url], folderId: nil, container: container)
 
-        let task = Task<Void, Error> { @MainActor [weak self] in
-            guard let self else { return }
-
-            isImporting = true
-            totalFiles = 1
-            completedFiles = 0
-            currentFileName = url.lastPathComponent
-            importErrors = []
-            skippedDuplicateFileNames = []
-
-            defer {
-                isImporting = false
-                currentPhase = .idle
-                downloadProgress = 0.0
-            }
-
-            let didImport = try await performImport(url: url, folderId: nil, container: container)
-            guard !Task.isCancelled else { throw CancellationError() }
-
-            if didImport {
-                completedFiles = 1
-                AccessibilityNotifications.announce("Imported \(url.deletingPathExtension().lastPathComponent)")
-            } else {
-                skippedDuplicateFileNames = [url.lastPathComponent]
-                AccessibilityNotifications.announce("\(url.deletingPathExtension().lastPathComponent) is already in your library")
-            }
+        if let error = importErrors.first {
+            throw error.error
         }
 
-        currentImportTask = task
-        defer {
-            if currentImportTask == task {
-                currentImportTask = nil
-            }
-        }
-
-        do {
-            try await task.value
-        } catch {
-            throw error
+        if completedFiles == 1 {
+            AccessibilityNotifications.announce("Imported \(url.deletingPathExtension().lastPathComponent)")
+        } else if !skippedDuplicateFileNames.isEmpty {
+            AccessibilityNotifications.announce("\(url.deletingPathExtension().lastPathComponent) is already in your library")
         }
     }
 
     private func announceImportSummary() {
         guard totalFiles > 0 else { return }
+        let message = Self.buildImportSummary(
+            completed: completedFiles,
+            total: totalFiles,
+            failed: importErrors.count,
+            skipped: skippedDuplicateFileNames.count
+        )
+        AccessibilityNotifications.announce(message)
+    }
 
-        let failedCount = importErrors.count
-        let skippedCount = skippedDuplicateFileNames.count
-        if completedFiles == totalFiles && failedCount == 0 && skippedCount == 0 {
-            let suffix = completedFiles == 1 ? "file" : "files"
-            AccessibilityNotifications.announce("Imported \(completedFiles) \(suffix)")
-            return
+    private nonisolated static func buildImportSummary(
+        completed: Int,
+        total: Int,
+        failed: Int,
+        skipped: Int
+    ) -> String {
+        func pluralize(_ count: Int, singular: String) -> String {
+            count == 1 ? singular : singular + "s"
         }
 
-        if failedCount == 0 && skippedCount > 0 {
-            if completedFiles > 0 {
-                let importedSuffix = completedFiles == 1 ? "file" : "files"
-                let skippedSuffix = skippedCount == 1 ? "file" : "files"
-                AccessibilityNotifications.announce("Imported \(completedFiles) \(importedSuffix). \(skippedCount) \(skippedSuffix) already in library")
-            } else {
-                let skippedSuffix = skippedCount == 1 ? "file" : "files"
-                AccessibilityNotifications.announce("No new files imported. \(skippedCount) \(skippedSuffix) already in library")
+        let allSucceeded = completed == total && failed == 0 && skipped == 0
+        let hasSkipped = skipped > 0
+        let hasFailed = failed > 0
+        let hasCompleted = completed > 0
+
+        if allSucceeded {
+            return "Imported \(completed) \(pluralize(completed, singular: "file"))"
+        }
+
+        if !hasFailed && hasSkipped {
+            if hasCompleted {
+                return "Imported \(completed) \(pluralize(completed, singular: "file")). \(skipped) \(pluralize(skipped, singular: "file")) already in library"
             }
-            return
+            return "No new files imported. \(skipped) \(pluralize(skipped, singular: "file")) already in library"
         }
 
-        if completedFiles > 0 && failedCount > 0 {
-            let skippedSuffix = skippedCount == 1 ? "file" : "files"
-            if skippedCount > 0 {
-                AccessibilityNotifications.announce("Imported \(completedFiles) of \(totalFiles) files. \(failedCount) failed. \(skippedCount) \(skippedSuffix) already in library")
-            } else {
-                AccessibilityNotifications.announce("Imported \(completedFiles) of \(totalFiles) files. \(failedCount) failed")
+        if hasCompleted && hasFailed {
+            var parts = ["Imported \(completed) of \(total) files", "\(failed) failed"]
+            if hasSkipped {
+                parts.append("\(skipped) \(pluralize(skipped, singular: "file")) already in library")
             }
-            return
+            return parts.joined(separator: ". ")
         }
 
-        if failedCount > 0 {
-            let suffix = failedCount == 1 ? "file" : "files"
-            let skippedSuffix = skippedCount == 1 ? "file" : "files"
-            if skippedCount > 0 {
-                AccessibilityNotifications.announce("Import failed for \(failedCount) \(suffix). \(skippedCount) \(skippedSuffix) already in library")
-            } else {
-                AccessibilityNotifications.announce("Import failed for \(failedCount) \(suffix)")
+        if hasFailed {
+            var parts = ["Import failed for \(failed) \(pluralize(failed, singular: "file"))"]
+            if hasSkipped {
+                parts.append("\(skipped) \(pluralize(skipped, singular: "file")) already in library")
             }
+            return parts.joined(separator: ". ")
         }
+
+        return ""
     }
 
     private func performImport(
@@ -201,13 +189,7 @@ final class ImportService: ObservableObject {
     ) async throws -> Bool {
         guard await MainActor.run(body: { SupportedFormats.isSupported(url) }) else {
             let errorType = ImportErrorType.unsupportedFormat
-            recordFailure(
-                for: url,
-                errorType: errorType,
-                retryCount: retryCountOnFailure,
-                container: container,
-                shouldScheduleAutoRetry: false
-            )
+            recordFailure(for: url, errorType: errorType, retryCount: retryCountOnFailure, container: container, shouldScheduleAutoRetry: false)
             throw ImportServiceError.unsupportedFormat(errorType.userMessage)
         }
 
@@ -219,9 +201,7 @@ final class ImportService: ObservableObject {
             AppLogger.importService.warning("startAccessingSecurityScopedResource returned false for \(url.lastPathComponent, privacy: .private(mask: .hash)); file may already be in sandbox — proceeding.")
         }
         defer {
-            if didAccessSecurityScope {
-                url.stopAccessingSecurityScopedResource()
-            }
+            if didAccessSecurityScope { url.stopAccessingSecurityScopedResource() }
         }
 
         var stagedArtifactURLs: [URL] = []
@@ -230,27 +210,7 @@ final class ImportService: ObservableObject {
         var didPersistImport = false
 
         defer {
-            for stagedURL in stagedArtifactURLs {
-                do {
-                    try FileManager.default.removeItem(at: stagedURL)
-                } catch {
-                    AppLogger.importService.warning("Failed to clean up staged file: \(error.localizedDescription, privacy: .private)")
-                }
-            }
-
-            if !didPersistImport, let finalAudioURLForCleanup {
-                do {
-                    try FileManager.default.removeItem(at: finalAudioURLForCleanup)
-                } catch {
-                    AppLogger.importService.warning("Failed to clean up audio file after failed import: \(error.localizedDescription, privacy: .private)")
-                }
-            }
-
-            if let stagedCoverArtFileName {
-                Task {
-                    await StorageManager.shared.deleteCoverArt(fileName: stagedCoverArtFileName)
-                }
-            }
+            cleanupStagedArtifacts(stagedArtifactURLs, finalAudioURL: finalAudioURLForCleanup, didPersist: didPersistImport, coverArtFileName: stagedCoverArtFileName)
         }
 
         do {
@@ -263,8 +223,8 @@ final class ImportService: ObservableObject {
             debugDidStageFile = false
 #endif
 
-            let stagedAudioURL = try makeStagingURL(for: url)
-            try await copyFileToStagingURL(at: url, destinationURL: stagedAudioURL)
+            let stagedAudioURL = try FileStagingHelper.makeStagingURL(for: url)
+            try await FileStagingHelper.copyFileToStagingURL(at: url, destinationURL: stagedAudioURL)
             stagedArtifactURLs.append(stagedAudioURL)
 
 #if DEBUG
@@ -275,91 +235,44 @@ final class ImportService: ObservableObject {
             }
 #endif
 
-            let asset = AVURLAsset(url: stagedAudioURL)
-            let duration = try await loadDuration(for: asset)
-            let metadata: [AVMetadataItem]?
-            do {
-                metadata = try await asset.load(.commonMetadata)
-            } catch {
-                AppLogger.importService.debug("Could not load common metadata: \(error.localizedDescription, privacy: .private)")
-                metadata = nil
-            }
-            let author = await Self.authorFromMetadata(metadata ?? [])
-            let coverArtData = await CoverArtExtractor().extractCoverArt(from: stagedAudioURL)
-            let title = url.deletingPathExtension().lastPathComponent
-            let bookId = UUID()
-            let storageManager = StorageManager.shared
-
+            let metadata = try await extractMetadata(from: stagedAudioURL, originalURL: url)
             try Task.checkCancellation()
-            try await storageManager.setupStoryCastLibraryDirectory()
+            try await StorageManager.shared.setupStoryCastLibraryDirectory()
 
-            if let coverArtData {
-                stagedCoverArtFileName = try await saveCoverArtIfPossible(coverArtData, for: bookId, storageManager: storageManager)
+            if let coverArtData = metadata.coverArtData {
+                stagedCoverArtFileName = try await saveCoverArtIfPossible(coverArtData, for: metadata.bookId, storageManager: StorageManager.shared)
             }
 
             try Task.checkCancellation()
-
-            let importedFileSize = Self.fileSizeInBytes(at: stagedAudioURL)
 
             let context = ModelContext(container)
-            let isDuplicate = ImportDuplicateDetector.shared.isDuplicate(
-                title: title,
-                duration: duration,
-                author: author,
-                fileSize: importedFileSize,
-                in: context
-            )
-
-            if isDuplicate {
-                AppLogger.importService.info("Skipped duplicate import for \"\(title)\" (duration: \(String(format: "%.1f", duration))s)")
+            if try checkForDuplicate(title: metadata.title, duration: metadata.duration, author: metadata.author, fileSize: metadata.fileSize, in: context) {
+                AppLogger.importService.info("Skipped duplicate import for \"\(metadata.title)\" (duration: \(String(format: "%.1f", metadata.duration))s)")
                 currentPhase = .idle
                 return false
             }
 
             try Task.checkCancellation()
 
-            let finalURL = try await storageManager.moveStagedFileToStoryCastLibraryDirectory(from: stagedAudioURL, withName: url.lastPathComponent)
+            let finalURL = try await StorageManager.shared.moveStagedFileToStoryCastLibraryDirectory(from: stagedAudioURL, withName: url.lastPathComponent)
             stagedArtifactURLs.removeAll { $0 == stagedAudioURL }
             finalAudioURLForCleanup = finalURL
 
             let detectedChapters = try await loadDetectedChapters(from: finalURL)
             try Task.checkCancellation()
 
-            let targetFolder = try resolveTargetFolder(folderId: folderId, in: context)
-            let book = Book(
-                id: bookId,
-                title: title,
-                author: author,
+            try persistBook(
+                bookId: metadata.bookId,
+                title: metadata.title,
+                author: metadata.author,
+                duration: metadata.duration,
                 localFileName: finalURL.lastPathComponent,
-                duration: duration,
-                isImported: true,
-                folder: targetFolder,
-                coverArtFileName: stagedCoverArtFileName
+                coverArtFileName: stagedCoverArtFileName,
+                detectedChapters: detectedChapters,
+                folderId: folderId,
+                in: context
             )
-            context.insert(book)
 
-            if book.folder == nil {
-                AppLogger.importService.error("Unfiled folder missing during import; book will be unassigned")
-            }
-
-            for detectedChapter in detectedChapters {
-                let chapter = Chapter(
-                    title: detectedChapter.title,
-                    startTime: detectedChapter.startTime,
-                    endTime: detectedChapter.endTime,
-                    source: detectedChapter.source,
-                    book: book
-                )
-
-                guard chapter.isValid else {
-                    AppLogger.importService.warning("Skipping invalid chapter during import")
-                    continue
-                }
-
-                context.insert(chapter)
-            }
-
-            try context.save()
             didPersistImport = true
             currentPhase = .idle
             finalAudioURLForCleanup = nil
@@ -371,16 +284,92 @@ final class ImportService: ObservableObject {
             throw CancellationError()
         } catch {
             currentPhase = .idle
-            let errorType = classifyError(error)
-            recordFailure(
-                for: url,
-                errorType: errorType,
-                retryCount: retryCountOnFailure,
-                container: container,
-                shouldScheduleAutoRetry: shouldScheduleAutoRetry
-            )
+            let errorType = ImportErrorType(classifying: error)
+            recordFailure(for: url, errorType: errorType, retryCount: retryCountOnFailure, container: container, shouldScheduleAutoRetry: shouldScheduleAutoRetry)
             throw error
         }
+    }
+
+    private func cleanupStagedArtifacts(_ stagedURLs: [URL], finalAudioURL: URL?, didPersist: Bool, coverArtFileName: String?) {
+        for url in stagedURLs {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if !didPersist, let finalAudioURL {
+            try? FileManager.default.removeItem(at: finalAudioURL)
+        }
+        if let coverArtFileName {
+            Task { await StorageManager.shared.deleteCoverArt(fileName: coverArtFileName) }
+        }
+    }
+
+    private struct ExtractedMetadata {
+        let bookId: UUID
+        let title: String
+        let author: String?
+        let duration: Double
+        let coverArtData: Data?
+        let fileSize: Int64?
+    }
+
+    private func extractMetadata(from stagedURL: URL, originalURL: URL) async throws -> ExtractedMetadata {
+        let asset = AVURLAsset(url: stagedURL)
+        let duration = try await loadDuration(for: asset)
+        let metadata: [AVMetadataItem]? = try? await asset.load(.commonMetadata)
+        let author = await AudioMetadataUtils.author(from: metadata ?? [])
+        let coverArtData = await CoverArtExtractor().extractCoverArt(from: stagedURL)
+        let title = originalURL.deletingPathExtension().lastPathComponent
+        let fileSize = AudioMetadataUtils.fileSizeInBytes(at: stagedURL)
+        return ExtractedMetadata(bookId: UUID(), title: title, author: author, duration: duration, coverArtData: coverArtData, fileSize: fileSize)
+    }
+
+    private func checkForDuplicate(title: String, duration: Double, author: String?, fileSize: Int64?, in context: ModelContext) throws -> Bool {
+        ImportDuplicateDetector.shared.isDuplicate(title: title, duration: duration, author: author, fileSize: fileSize, in: context)
+    }
+
+    private func persistBook(
+        bookId: UUID,
+        title: String,
+        author: String?,
+        duration: Double,
+        localFileName: String,
+        coverArtFileName: String?,
+        detectedChapters: [DetectedChapter],
+        folderId: UUID?,
+        in context: ModelContext
+    ) throws {
+        let targetFolder = try resolveTargetFolder(folderId: folderId, in: context)
+        let book = Book(
+            id: bookId,
+            title: title,
+            author: author,
+            localFileName: localFileName,
+            duration: duration,
+            isImported: true,
+            folder: targetFolder,
+            coverArtFileName: coverArtFileName
+        )
+        context.insert(book)
+
+        if book.folder == nil {
+            AppLogger.importService.error("Unfiled folder missing during import; book will be unassigned")
+        }
+
+        for detectedChapter in detectedChapters {
+            let chapter = Chapter(
+                title: detectedChapter.title,
+                startTime: detectedChapter.startTime,
+                endTime: detectedChapter.endTime,
+                source: detectedChapter.source,
+                book: book
+            )
+            guard chapter.isValid else {
+                AppLogger.importService.warning("Skipping invalid chapter during import")
+                continue
+            }
+            context.insert(chapter)
+        }
+
+        try context.save()
     }
 
     private func loadDuration(for asset: AVURLAsset) async throws -> Double {
@@ -439,47 +428,6 @@ final class ImportService: ObservableObject {
         }
     }
 
-    private func makeStagingURL(for sourceURL: URL) throws -> URL {
-        let stagingDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("StoryCastImportStaging", isDirectory: true)
-        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
-
-        let fileExtension = sourceURL.pathExtension
-        let fileName = UUID().uuidString + (fileExtension.isEmpty ? "" : ".\(fileExtension)")
-        return stagingDirectory.appendingPathComponent(fileName)
-    }
-
-    private func copyFileToStagingURL(at sourceURL: URL, destinationURL: URL) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            let coordinator = NSFileCoordinator()
-            var coordinationError: NSError?
-            var hasResumed = false
-
-            coordinator.coordinate(readingItemAt: sourceURL, options: .withoutChanges, error: &coordinationError) { coordinatedURL in
-                do {
-                    let fileManager = FileManager.default
-                    if fileManager.fileExists(atPath: destinationURL.path) {
-                        try fileManager.removeItem(at: destinationURL)
-                    }
-                    try fileManager.copyItem(at: coordinatedURL, to: destinationURL)
-                    if !hasResumed {
-                        hasResumed = true
-                        continuation.resume(returning: ())
-                    }
-                } catch {
-                    if !hasResumed {
-                        hasResumed = true
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-
-            if let coordinationError, !hasResumed {
-                hasResumed = true
-                continuation.resume(throwing: coordinationError)
-            }
-        }
-    }
-
     private func recordFailure(
         for url: URL,
         errorType: ImportErrorType,
@@ -487,78 +435,19 @@ final class ImportService: ObservableObject {
         container: ModelContainer,
         shouldScheduleAutoRetry: Bool
     ) {
-        let sourceKey = FailedImport.normalizedSourceKey(for: url)
-
-        let failedImport = FailedImport(
-            url: url,
-            fileName: url.lastPathComponent,
-            errorType: errorType,
-            errorMessage: errorType.userMessage,
-            retryCount: retryCount
-        )
-
-        upsertFailedImport(failedImport)
-
-        if shouldScheduleAutoRetry && failedImport.canAutoRetry {
-            scheduleAutoRetry(for: failedImport, container: container)
-        } else {
-            retryTasks.removeValue(forKey: sourceKey)?.cancel()
-        }
+        retryManager.recordFailure(for: url, errorType: errorType, retryCount: retryCount, container: container, shouldScheduleAutoRetry: shouldScheduleAutoRetry)
     }
 
-    private func upsertFailedImport(_ failedImport: FailedImport) {
-        if let index = failedImports.firstIndex(where: { $0.sourceKey == failedImport.sourceKey }) {
-            failedImports[index] = failedImport
-        } else {
-            failedImports.append(failedImport)
-        }
+    func retryImport(_ failedImport: FailedImport, container: ModelContainer) async {
+        await retryManager.retryImport(failedImport, container: container)
     }
 
-    private nonisolated func classifyError(_ error: Error) -> ImportErrorType {
-        let nsError = error as NSError
+    func retryAllFailed(container: ModelContainer) async {
+        await retryManager.retryAllFailed(container: container)
+    }
 
-        if nsError.domain == NSURLErrorDomain {
-            switch nsError.code {
-            case NSURLErrorNotConnectedToInternet:
-                return .networkUnavailable
-            case NSURLErrorTimedOut:
-                return .networkTimeout
-            case NSURLErrorNetworkConnectionLost:
-                return .connectionLost
-            case NSURLErrorFileDoesNotExist, NSURLErrorResourceUnavailable:
-                return .fileNotFound
-            case NSURLErrorNoPermissionsToReadFile:
-                return .fileAccessDenied
-            default:
-                break
-            }
-        }
-
-        if nsError.domain == NSCocoaErrorDomain {
-            switch nsError.code {
-            case NSFileReadNoSuchFileError:
-                return .fileNotFound
-            case NSFileReadNoPermissionError:
-                return .fileAccessDenied
-            default:
-                break
-            }
-        }
-
-        if nsError.domain == AVFoundationErrorDomain {
-            switch nsError.code {
-            case -16840, -16841, -16842, -16843:
-                return .drmProtected
-            default:
-                break
-            }
-        }
-
-        if nsError.code == 260 {
-            return .fileNotFound
-        }
-
-        return .unknown
+    func dismissFailedImport(_ failedImport: FailedImport) {
+        retryManager.dismissFailedImport(failedImport)
     }
 
     private func accessCloudFile(at url: URL) async throws {
@@ -573,152 +462,20 @@ final class ImportService: ObservableObject {
 
         try Task.checkCancellation()
     }
-
-    private nonisolated static func authorFromMetadata(_ metadata: [AVMetadataItem]) async -> String? {
-        let candidateKeys = Set(["author", "artist", "albumartist", "creator"])
-        for item in metadata {
-            guard let key = item.commonKey?.rawValue.lowercased(), candidateKeys.contains(key) else { continue }
-            do {
-                if let value = try await item.load(.stringValue) {
-                    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        return trimmed
-                    }
-                }
-            } catch {
-                AppLogger.importService.debug("Could not load stringValue for metadata key \(key): \(error.localizedDescription, privacy: .private)")
-            }
-            do {
-                if let value = try await item.load(.value), let stringValue = value as? String {
-                    let trimmed = stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        return trimmed
-                    }
-                }
-            } catch {
-                AppLogger.importService.debug("Could not load raw value for metadata key \(key): \(error.localizedDescription, privacy: .private)")
-            }
-        }
-        return nil
-    }
-
-    private nonisolated static func fileSizeInBytes(at url: URL) -> Int64? {
-        if let resourceValues = try? url.resourceValues(forKeys: [.fileSizeKey]),
-           let fileSize = resourceValues.fileSize {
-            return Int64(fileSize)
-        }
-
-        if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-           let sizeNumber = attributes[.size] as? NSNumber {
-            return sizeNumber.int64Value
-        }
-
-        return nil
-    }
-
-    func retryImport(_ failedImport: FailedImport, container: ModelContainer) async {
-        retryTasks.removeValue(forKey: failedImport.sourceKey)?.cancel()
-        let previousRetryCount = failedImport.retryCount
-        failedImports.removeAll { $0.sourceKey == failedImport.sourceKey }
-
-        await performRetryImport(url: failedImport.url, folderId: nil, container: container, previousRetryCount: previousRetryCount)
-    }
-
-    func retryAllFailed(container: ModelContainer) async {
-        let retryableImports = failedImports.filter { $0.errorType.isTransient }
-        let retryCounts = Dictionary(uniqueKeysWithValues: retryableImports.map { ($0.sourceKey, $0.retryCount) })
-
-        for failedImport in retryableImports {
-            retryTasks.removeValue(forKey: failedImport.sourceKey)?.cancel()
-        }
-
-        failedImports.removeAll { $0.errorType.isTransient }
-
-        for failedImport in retryableImports {
-            let previousRetryCount = retryCounts[failedImport.sourceKey] ?? 0
-            await performRetryImport(url: failedImport.url, folderId: nil, container: container, previousRetryCount: previousRetryCount)
-        }
-    }
-
-    func dismissFailedImport(_ failedImport: FailedImport) {
-        retryTasks.removeValue(forKey: failedImport.sourceKey)?.cancel()
-        failedImports.removeAll { $0.sourceKey == failedImport.sourceKey }
-    }
-
-    private func performRetryImport(url: URL, folderId: UUID?, container: ModelContainer, previousRetryCount: Int) async {
-        do {
-            _ = try await performImport(
-                url: url,
-                folderId: folderId,
-                container: container,
-                retryCountOnFailure: previousRetryCount + 1,
-                shouldScheduleAutoRetry: true
-            )
-        } catch is CancellationError {
-            return
-        } catch {
-            AppLogger.importService.error("Retry import failed for \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
-        }
-    }
-
-    private func scheduleAutoRetry(for failedImport: FailedImport, container: ModelContainer) {
-        let sourceKey = failedImport.sourceKey
-        retryTasks.removeValue(forKey: sourceKey)?.cancel()
-
-        guard failedImport.canAutoRetry else { return }
-
-        let attemptNumber = failedImport.retryCount + 1
-        let delay = pow(2.0, Double(failedImport.retryCount))
-
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            do {
-                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            } catch is CancellationError {
-                retryTasks.removeValue(forKey: sourceKey)
-                return
-            } catch {
-                AppLogger.importService.warning("Unexpected error during auto-retry delay: \(error.localizedDescription, privacy: .private)")
-                retryTasks.removeValue(forKey: sourceKey)
-                return
-            }
-
-            guard !Task.isCancelled,
-                  let currentFailure = failedImports.first(where: { $0.sourceKey == sourceKey }),
-                  currentFailure.retryCount + 1 == attemptNumber else {
-                retryTasks.removeValue(forKey: sourceKey)
-                return
-            }
-
-            retryTasks.removeValue(forKey: sourceKey)
-            await retryImport(currentFailure, container: container)
-        }
-
-        retryTasks[sourceKey] = task
-    }
-}
-
-struct ImportError: Identifiable {
-    let id = UUID()
-    let fileName: String
-    let error: Error
 }
 
 #if DEBUG
 extension ImportService {
-    var debugRetryTaskCount: Int { retryTasks.count }
+    var debugRetryTaskCount: Int { retryManager.retryTaskCount }
 
     func debugRegisterRetryTask(_ task: Task<Void, Never>, for sourceKey: String) {
-        retryTasks[sourceKey]?.cancel()
-        retryTasks[sourceKey] = task
+        retryManager.debugRegisterRetryTask(task, for: sourceKey)
     }
 
     func debugResetState() {
         currentImportTask?.cancel()
         currentImportTask = nil
-        retryTasks.values.forEach { $0.cancel() }
-        retryTasks.removeAll()
+        retryManager.debugResetState()
         importWasCancelled = false
         isImporting = false
         totalFiles = 0

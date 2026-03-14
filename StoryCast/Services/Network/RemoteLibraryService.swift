@@ -3,47 +3,6 @@ import SwiftData
 import Combine
 import os
 
-// MARK: - Cover Art Failure
-
-/// Tracks a failed cover art download for a specific book, including retry state.
-struct CoverArtFailure: Sendable {
-    /// The SwiftData `Book.id` for the affected book.
-    let bookId: UUID
-    /// The server ID this failure is associated with.
-    let serverId: UUID
-    /// The compound key for this failure (serverId_bookId).
-    var compoundKey: String { "\(serverId.uuidString)_\(bookId.uuidString)" }
-    /// The Audiobookshelf item ID used to fetch cover art.
-    let itemId: String
-    /// Description of the error that caused the last download failure.
-    let errorDescription: String
-    /// When the last failure occurred.
-    let timestamp: Date
-    /// How many times a download has been attempted and failed (1 on first failure).
-    let retryCount: Int
-
-    /// Maximum number of attempts before giving up on automatic retries.
-    static let maxRetries: Int = 3
-
-    /// Exponential backoff delay (seconds) before the next auto-retry.
-    /// Sequence: 2s → 4s → 8s.
-    var backoffDelay: TimeInterval {
-        pow(2.0, Double(retryCount))
-    }
-
-    /// True when no more automatic retries will be attempted.
-    var isExhausted: Bool { retryCount >= Self.maxRetries }
-    
-    init(bookId: UUID, serverId: UUID, itemId: String, error: Error, timestamp: Date, retryCount: Int) {
-        self.bookId = bookId
-        self.serverId = serverId
-        self.itemId = itemId
-        self.errorDescription = error.localizedDescription
-        self.timestamp = timestamp
-        self.retryCount = retryCount
-    }
-}
-
 /// Fetches and caches the remote Audiobookshelf library for a given server.
 /// Merges remote items into the local SwiftData store as `Book` records with
 /// `source == .remote`, so they appear alongside local books in the library.
@@ -80,10 +39,8 @@ final class RemoteLibraryService: ObservableObject {
 
     // MARK: - Server Activation
 
-    /// Sets the active server and validates the stored token.
-    /// Returns `true` if the token is valid, `false` if re-login is needed.
-    /// Uses an operation ID to detect and abort stale activations when servers change
-    /// rapidly (e.g., user switches servers before the previous activation completes).
+    /// Validates the server token; returns true if valid, false if re-login needed.
+    /// Uses operation ID to abort stale activations on rapid server switches.
     func activateServer(_ server: ABSServer, container: ModelContainer) async -> Bool {
         let activationId = UUID()
         currentActivationId = activationId
@@ -179,30 +136,20 @@ final class RemoteLibraryService: ObservableObject {
         uiCoverArtCoordinator.enqueue(requests: requests, container: container)
     }
 
-    func resolveUnfiledFolder(in context: ModelContext) throws -> Folder {
-        // Use centralized FolderService to ensure atomic Unfiled folder resolution
-        return try FolderService.resolveUnfiledFolder(in: context)
-    }
-
-    /// Manually retries a failed cover art download for the given book ID.
-    /// Resets the retry counter so the exponential backoff sequence restarts.
     func retryCoverArtDownload(for bookId: UUID, container: ModelContainer) {
         uiCoverArtCoordinator.retryCoverArtDownload(for: bookId, activeServer: activeServer, container: container)
     }
 
-    /// Retries all currently tracked cover art failures.
     func retryAllCoverArtDownloads(container: ModelContainer) {
         uiCoverArtCoordinator.retryAllCoverArtDownloads(activeServer: activeServer, container: container)
     }
 
     // MARK: - Cleanup
 
-    /// Cancels all in-progress cover art download tasks.
     func cancelAllCoverArtDownloads() {
         uiCoverArtCoordinator.cancelAllCoverArtDownloads()
     }
 
-    /// Cancels in-progress cover art download tasks for the supplied book IDs.
     func cancelCoverArtDownloads(for bookIds: Set<UUID>) {
         uiCoverArtCoordinator.cancelCoverArtDownloads(for: bookIds)
     }
@@ -304,10 +251,6 @@ final class RemoteLibraryService: ObservableObject {
 
     func debugRegisterCoverArtTask(_ task: Task<Void, Never>, for bookId: UUID) {
         uiCoverArtCoordinator.debugRegisterTask(task, for: bookId)
-    }
-
-    func debugResetCoverArtTasks() {
-        uiCoverArtCoordinator.debugResetState()
     }
 #endif
 }

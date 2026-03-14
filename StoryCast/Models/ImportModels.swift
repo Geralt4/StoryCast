@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 
 // MARK: - Import Phase
 
@@ -46,7 +47,51 @@ enum ImportErrorType {
     
     /// Unknown or uncategorized error
     case unknown
-    
+
+    init(classifying error: Error) {
+        let nsError = error as NSError
+
+        if nsError.domain == NSURLErrorDomain {
+            switch nsError.code {
+            case NSURLErrorNotConnectedToInternet:
+                self = .networkUnavailable; return
+            case NSURLErrorTimedOut:
+                self = .networkTimeout; return
+            case NSURLErrorNetworkConnectionLost:
+                self = .connectionLost; return
+            case NSURLErrorFileDoesNotExist, NSURLErrorResourceUnavailable:
+                self = .fileNotFound; return
+            case NSURLErrorNoPermissionsToReadFile:
+                self = .fileAccessDenied; return
+            default: break
+            }
+        }
+
+        if nsError.domain == NSCocoaErrorDomain {
+            switch nsError.code {
+            case NSFileReadNoSuchFileError:
+                self = .fileNotFound; return
+            case NSFileReadNoPermissionError:
+                self = .fileAccessDenied; return
+            default: break
+            }
+        }
+
+        if nsError.domain == AVFoundationErrorDomain {
+            switch nsError.code {
+            case -16840, -16841, -16842, -16843:
+                self = .drmProtected; return
+            default: break
+            }
+        }
+
+        if nsError.code == 260 {
+            self = .fileNotFound; return
+        }
+
+        self = .unknown
+    }
+
     /// Whether this error is transient and can be retried automatically.
     ///
     /// - Returns: `true` for network-related errors that may succeed on retry
@@ -145,5 +190,11 @@ struct ImportDisplayError: Identifiable {
     let fileName: String
     
     /// The underlying error
+    let error: Error
+}
+
+struct ImportError: Identifiable {
+    let id = UUID()
+    let fileName: String
     let error: Error
 }

@@ -5,60 +5,28 @@ import os
 import UIKit
 #endif
 
-/// Manages background playback tasks and app lifecycle events.
-///
-/// `PlaybackBackgroundManager` handles:
-/// - Background task registration for continued playback
-/// - App lifecycle event handling (background, foreground, resign active)
-/// - Protected data availability notifications
-///
-/// ## Background Playback
-///
-/// Registers a background task when app enters background while playing,
-/// allowing audio to continue for up to several minutes.
-///
-/// ## Usage
-///
-/// ```swift
-/// let manager = PlaybackBackgroundManager.shared
-/// manager.setup()
-/// 
-/// // When playback starts/stops
-/// manager.isPlaying = true
-/// manager.handleAppDidEnterBackground()
-/// ```
+protocol PlaybackLifecycleDelegate: AnyObject {
+    func playbackWillResignActive()
+    func playbackDidEnterBackground()
+    func playbackWillEnterForeground()
+    func playbackDidBecomeActive()
+    func playbackProtectedDataWillBecomeUnavailable()
+    func playbackProtectedDataDidBecomeAvailable()
+}
+
 @MainActor
 final class PlaybackBackgroundManager {
     static let shared = PlaybackBackgroundManager()
     
-    /// Whether audio is currently playing.
+    weak var delegate: PlaybackLifecycleDelegate?
+    
     var isPlaying = false {
         didSet {
             #if os(iOS)
-            if !isPlaying {
-                endBackgroundTaskIfNeeded()
-            }
+            if !isPlaying { endBackgroundTaskIfNeeded() }
             #endif
         }
     }
-    
-    /// Called when app is about to resign active.
-    var onWillResignActive: (() -> Void)?
-    
-    /// Called when app did enter background.
-    var onDidEnterBackground: (() -> Void)?
-    
-    /// Called when app will enter foreground.
-    var onWillEnterForeground: (() -> Void)?
-    
-    /// Called when app did become active.
-    var onDidBecomeActive: (() -> Void)?
-    
-    /// Called when protected data will become unavailable.
-    var onProtectedDataWillBecomeUnavailable: (() -> Void)?
-    
-    /// Called when protected data did become available.
-    var onProtectedDataDidBecomeAvailable: (() -> Void)?
     
     #if os(iOS)
     private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
@@ -67,9 +35,6 @@ final class PlaybackBackgroundManager {
     
     private init() {}
     
-    /// Sets up lifecycle event observers.
-    ///
-    /// Call this once during app initialization.
     func setup() {
         #if os(iOS)
         let center = NotificationCenter.default
@@ -79,10 +44,7 @@ final class PlaybackBackgroundManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor [self] in
-                self.handleWillResignActive()
-            }
+            Task { @MainActor [weak self] in self?.handleWillResignActive() }
         })
         
         lifecycleObservers.append(center.addObserver(
@@ -90,10 +52,7 @@ final class PlaybackBackgroundManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor [self] in
-                self.handleDidEnterBackground()
-            }
+            Task { @MainActor [weak self] in self?.handleDidEnterBackground() }
         })
         
         lifecycleObservers.append(center.addObserver(
@@ -101,10 +60,7 @@ final class PlaybackBackgroundManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor [self] in
-                self.handleWillEnterForeground()
-            }
+            Task { @MainActor [weak self] in self?.handleWillEnterForeground() }
         })
         
         lifecycleObservers.append(center.addObserver(
@@ -112,10 +68,7 @@ final class PlaybackBackgroundManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor [self] in
-                self.handleDidBecomeActive()
-            }
+            Task { @MainActor [weak self] in self?.handleDidBecomeActive() }
         })
         
         lifecycleObservers.append(center.addObserver(
@@ -123,10 +76,7 @@ final class PlaybackBackgroundManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor [self] in
-                self.handleProtectedDataWillBecomeUnavailable()
-            }
+            Task { @MainActor [weak self] in self?.handleProtectedDataWillBecomeUnavailable() }
         })
         
         lifecycleObservers.append(center.addObserver(
@@ -134,17 +84,11 @@ final class PlaybackBackgroundManager {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
-            Task { @MainActor [self] in
-                self.handleProtectedDataDidBecomeAvailable()
-            }
+            Task { @MainActor [weak self] in self?.handleProtectedDataDidBecomeAvailable() }
         })
         #endif
     }
     
-    /// Handles app entering background state.
-    ///
-    /// Starts background task if audio is playing.
     func handleAppDidEnterBackground() {
         #if os(iOS)
         guard isPlaying else {
@@ -155,9 +99,6 @@ final class PlaybackBackgroundManager {
         #endif
     }
     
-    /// Handles app becoming active.
-    ///
-    /// Ends background task if not playing.
     func handleAppDidBecomeActive() {
         #if os(iOS)
         guard isPlaying else {
@@ -167,34 +108,38 @@ final class PlaybackBackgroundManager {
         #endif
     }
     
-    // MARK: - Private
-    
     #if os(iOS)
     private func handleWillResignActive() {
         guard isPlaying else { return }
         beginBackgroundTaskIfNeeded()
+        delegate?.playbackWillResignActive()
     }
     
     private func handleDidEnterBackground() {
         guard isPlaying else { return }
         beginBackgroundTaskIfNeeded()
+        delegate?.playbackDidEnterBackground()
     }
     
     private func handleWillEnterForeground() {
         guard isPlaying else { return }
+        delegate?.playbackWillEnterForeground()
     }
     
     private func handleDidBecomeActive() {
         guard isPlaying else { return }
+        delegate?.playbackDidBecomeActive()
     }
     
     private func handleProtectedDataWillBecomeUnavailable() {
         guard isPlaying else { return }
         beginBackgroundTaskIfNeeded()
+        delegate?.playbackProtectedDataWillBecomeUnavailable()
     }
     
     private func handleProtectedDataDidBecomeAvailable() {
         guard isPlaying else { return }
+        delegate?.playbackProtectedDataDidBecomeAvailable()
     }
     
     private func beginBackgroundTaskIfNeeded() {

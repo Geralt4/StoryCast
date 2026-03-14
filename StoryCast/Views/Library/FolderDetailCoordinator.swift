@@ -55,4 +55,15 @@ final class FolderDetailCoordinator {
     func finishMove() {
         selectedBook = nil
     }
+
+    func moveSelectedBooks(from books: [Book], using bookActions: LibraryBookActions, to targetFolder: Folder) throws {
+        for bookId in selectedBookIds {
+            guard let book = books.first(where: { $0.id == bookId }) else { continue }
+            try bookActions.moveBook(book, to: targetFolder)
+        }
+    }
+
+    func selectedBooks(from books: [Book]) -> [Book] {
+        books.filter { selectedBookIds.contains($0.id) }
+    }
 }

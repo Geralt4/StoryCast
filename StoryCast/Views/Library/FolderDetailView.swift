@@ -35,10 +35,6 @@ struct FolderDetailView: View {
         searchHandler.filteredBooks(from: folderBooks)
     }
 
-    private var isEditing: Bool {
-        coordinator.isEditing
-    }
-
     private var selectableBookIds: Set<UUID> {
         Set(folderBooks.map { $0.id })
     }
@@ -47,35 +43,32 @@ struct FolderDetailView: View {
         !selectableBookIds.isEmpty && coordinator.selectedBookIds.isSuperset(of: selectableBookIds)
     }
 
-    private var emptyStateTitle: String {
-        searchHandler.isSearching ? "No Results" : "No Books"
-    }
-
-    private var emptyStateDescription: String {
-        searchHandler.isSearching ? "Try a different search." : "This folder is empty"
-    }
-
     var body: some View {
         FolderDetailListView(
             folderBooks: filteredBooks,
-            isEditing: isEditing,
+            isEditing: coordinator.isEditing,
             selectedBookIds: $coordinator.selectedBookIds,
-            onDeleteBooks: deleteBooks,
+            onDeleteBooks: { offsets in
+                let books: [Book] = offsets.compactMap { filteredBooks.indices.contains($0) ? filteredBooks[$0] : nil }
+                deleteBooks(books)
+            },
             onSelect: { book in
                 coordinator.toggleSelection(for: book)
             },
             onMove: { book in
                 coordinator.beginMove(for: book)
             },
-            onDelete: deleteBookAction,
+            onDelete: { book in
+                deleteBooks([book])
+            },
             onDownload: { book in
                 bookActions.downloadBook(book)
             },
             onRemoveDownload: { book in
                 bookActions.removeDownloadedBook(book)
             },
-            emptyStateTitle: emptyStateTitle,
-            emptyStateDescription: emptyStateDescription
+            emptyStateTitle: searchHandler.isSearching ? "No Results" : "No Books",
+            emptyStateDescription: searchHandler.isSearching ? "Try a different search." : "This folder is empty"
         )
         .navigationTitle(folder.name)
         .searchable(text: $searchHandler.searchText, prompt: "Search books")
@@ -84,7 +77,7 @@ struct FolderDetailView: View {
         }
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button(isEditing ? "Done" : "Select") {
+                Button(coordinator.isEditing ? "Done" : "Select") {
                     HapticManager.impact(.light)
                     withAnimation {
                         coordinator.toggleSelectionMode()
@@ -92,7 +85,7 @@ struct FolderDetailView: View {
                 }
             }
             ToolbarItem(placement: .navigationBarTrailing) {
-                if !isEditing {
+                if !coordinator.isEditing {
                     Button(action: {
                         HapticManager.impact(.light)
                         coordinator.showFileImporter = true
@@ -101,10 +94,8 @@ struct FolderDetailView: View {
                     }
                 }
             }
-        }
-        .toolbar {
             ToolbarItemGroup(placement: .bottomBar) {
-                if isEditing {
+                if coordinator.isEditing {
                     if !selectableBookIds.isEmpty {
                         Button(action: {
                             HapticManager.impact(.light)
@@ -192,7 +183,11 @@ struct FolderDetailView: View {
                 folders: allFolders,
                 currentFolder: folder,
                 onSave: { targetFolder in
-                    moveSelectedBooks(to: targetFolder)
+                    do {
+                        try coordinator.moveSelectedBooks(from: folderBooks, using: bookActions, to: targetFolder)
+                    } catch {
+                        presentError("Failed to move books", error: error)
+                    }
                     coordinator.selectedBookIds.removeAll()
                     coordinator.showBulkMoveToFolder = false
                 },
@@ -205,7 +200,11 @@ struct FolderDetailView: View {
             BulkDeleteConfirmationSheet(
                 count: coordinator.selectedBookIds.count,
                 onConfirm: {
-                    deleteSelectedBooks()
+                    let books = coordinator.selectedBooks(from: folderBooks)
+                    deleteBooks(books) {
+                        coordinator.selectedBookIds.removeAll()
+                        coordinator.showBulkDeleteConfirmation = false
+                    }
                 },
                 onCancel: {
                     coordinator.showBulkDeleteConfirmation = false
@@ -220,39 +219,6 @@ struct FolderDetailView: View {
             importHandler.onDisappear()
             searchHandler.onDisappear()
         }
-    }
-
-    private func moveSelectedBooks(to targetFolder: Folder) {
-        for bookId in coordinator.selectedBookIds {
-            guard let book = folderBooks.first(where: { $0.id == bookId }) else { continue }
-
-            do {
-                try bookActions.moveBook(book, to: targetFolder)
-            } catch {
-                presentError("Failed to move books", error: error)
-                return
-            }
-        }
-    }
-
-    private func deleteSelectedBooks() {
-        let books = folderBooks.filter { coordinator.selectedBookIds.contains($0.id) }
-        deleteBooks(books) {
-            coordinator.selectedBookIds.removeAll()
-            coordinator.showBulkDeleteConfirmation = false
-        }
-    }
-
-    private func deleteBooks(offsets: IndexSet) {
-        let books: [Book] = offsets.compactMap { index in
-            guard filteredBooks.indices.contains(index) else { return nil }
-            return filteredBooks[index]
-        }
-        deleteBooks(books)
-    }
-
-    private func deleteBookAction(_ book: Book) {
-        deleteBooks([book])
     }
 
     private func deleteBooks(_ books: [Book], onSuccess: (() -> Void)? = nil) {

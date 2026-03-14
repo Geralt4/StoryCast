@@ -51,13 +51,12 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: Folder.self, configurations: config)
         let context = ModelContext(container)
-        let service = RemoteLibraryService.shared
 
-        let createdFolder = try service.resolveUnfiledFolder(in: context)
+        let createdFolder = try FolderService.resolveUnfiledFolder(in: context)
         XCTAssertTrue(createdFolder.isSystem)
         XCTAssertEqual(createdFolder.name, "Unfiled")
 
-        let reusedFolder = try service.resolveUnfiledFolder(in: context)
+        let reusedFolder = try FolderService.resolveUnfiledFolder(in: context)
         XCTAssertEqual(reusedFolder.id, createdFolder.id)
 
         let allFolders = try context.fetch(FetchDescriptor<Folder>())
