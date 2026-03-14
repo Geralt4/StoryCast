@@ -3,9 +3,7 @@ import SwiftData
 
 // MARK: - Versioned Schema
 
-/// Defines the initial v1.0 schema so that future model changes can be
-/// migrated without data loss. Any post-v1.0 schema change should add a
-/// new VersionedSchema (e.g. SchemaV2) and a corresponding MigrationPlan.
+/// v1.0 schema for future migrations.
 enum SchemaV1: VersionedSchema {
     static let versionIdentifier = Schema.Version(1, 0, 0)
 
@@ -16,18 +14,11 @@ enum SchemaV1: VersionedSchema {
 
 // MARK: - Chapter
 
-enum ChapterSource: String, Codable, CaseIterable, Identifiable {
+enum ChapterSource: String, Codable, Identifiable {
     case embedded
     case unknown
 
     var id: Self { self }
-
-    var displayName: String {
-        switch self {
-        case .embedded: return "From file metadata"
-        case .unknown: return "Unknown"
-        }
-    }
 }
 
 struct DetectedChapter: Sendable {
@@ -88,12 +79,10 @@ class Book {
     // Normalized fields for efficient search (updated when title/author changes)
     private(set) var normalizedTitle: String = ""
     private(set) var normalizedAuthor: String = ""
-    private(set) var searchKey: String = ""
-    
+
     func updateSearchFields() {
         normalizedTitle = Self.normalizeForSearch(title)
         normalizedAuthor = Self.normalizeForSearch(author)
-        searchKey = normalizedAuthor.isEmpty ? normalizedTitle : "\(normalizedTitle) | \(normalizedAuthor)"
     }
     
     static func normalizeForSearch(_ value: String?) -> String {
@@ -166,11 +155,6 @@ class Folder {
     var bookCount: Int {
         books.count
     }
-    
-    /// A folder is valid when its name is non-empty after trimming whitespace.
-    var isValid: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
 
     init(id: UUID = UUID(), name: String, isSystem: Bool = false, sortOrder: Int = 0) {
         self.id = id
@@ -205,9 +189,6 @@ enum StoryCastMigrationPlan: SchemaMigrationPlan {
         fromVersion: SchemaV1.self,
         toVersion: SchemaV2.self,
         willMigrate: nil,
-        didMigrate: { context in
-            // Migration complete - no data transformation needed
-            // New properties have default values
-        }
+        didMigrate: { _ in }
     )
 }
