@@ -36,6 +36,7 @@ final class PlayerViewModel {
     private var remotePlaybackTask: Task<Void, Never>?
     private var playbackSaveErrorTask: Task<Void, Never>?
     private var debouncedSaveTask: Task<Void, Never>?
+    private var periodicSaveTimer: Timer?
     private var lastSavedPosition: Double = -1.0
 
     // MARK: - Singleton References
@@ -155,7 +156,21 @@ final class PlayerViewModel {
                     }.value
                     guard audioPlayer.currentURL != audioURL else { return }
                     if fileExists {
-                        audioPlayer.loadAudio(url: audioURL, title: book.title, duration: safeDuration, seekTo: book.lastPlaybackPosition)
+                        // Check for and restore any pending UserDefaults backup
+                        let backupPosition = restorePositionFromUserDefaults()
+                        let startPosition = backupPosition ?? book.lastPlaybackPosition
+                        audioPlayer.loadAudio(url: audioURL, title: book.title, duration: safeDuration, seekTo: startPosition)
+                        
+                        // If we restored from backup, also update the book's position
+                        if let backupPosition = backupPosition {
+                            book.lastPlaybackPosition = backupPosition
+                            do {
+                                try modelContext?.save()
+                                clearPositionBackup()
+                            } catch {
+                                AppLogger.playback.error("Failed to restore backup position: \(error.localizedDescription, privacy: .private)")
+                            }
+                        }
                     } else {
                         showMissingFileAlert = true
                     }
@@ -205,6 +220,9 @@ final class PlayerViewModel {
                 }
             }
         }
+        
+        // Start periodic save timer for progress safety net
+        startPeriodicSaveTimer()
     }
 
     func onDisappear() {
@@ -212,6 +230,8 @@ final class PlayerViewModel {
         chapterExtractionTask?.cancel()
         playbackSaveErrorTask?.cancel()
         remotePlaybackTask?.cancel()
+        periodicSaveTimer?.invalidate()
+        periodicSaveTimer = nil
         clearChapterPlaybackSession()
         // Save playback position only if this book is still loaded
         guard isCurrentBookLoaded() else { return }
@@ -243,6 +263,8 @@ final class PlayerViewModel {
             updateLastPlayedDate()
             AccessibilityNotifications.announce("Playing \(book.title)")
         } else {
+            // Save immediately when pausing to prevent data loss on app close
+            forceSavePlaybackPosition(audioPlayer.currentTime, errorMessage: "Couldn't save playback position.")
             AccessibilityNotifications.announce("Paused")
         }
     }
@@ -426,7 +448,10 @@ final class PlayerViewModel {
         do {
             try modelContext?.save()
             lastSavedPosition = position
+            clearPositionBackup()
         } catch {
+            // Backup to UserDefaults as fallback before showing error
+            backupPositionToUserDefaults(position)
             presentPlaybackSaveError(errorMessage)
         }
     }
@@ -546,5 +571,60 @@ final class PlayerViewModel {
         }
 
         return nil
+    }
+    
+    // MARK: - Periodic Save Timer
+    
+    private func startPeriodicSaveTimer() {
+        periodicSaveTimer?.invalidate()
+        periodicSaveTimer = Timer.scheduledTimer(
+            withTimeInterval: PerformanceDefaults.periodicPlaybackSaveInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, isCurrentBookLoaded() else { return }
+                // Only save if position has changed significantly
+                let currentTime = audioPlayer.currentTime
+                guard abs(currentTime - lastSavedPosition) > 1.0 else { return }
+                
+                // Force save without error UI (silent save for periodic)
+                book.lastPlaybackPosition = currentTime
+                do {
+                    try modelContext?.save()
+                    lastSavedPosition = currentTime
+                    // Clear backup after successful save
+                    clearPositionBackup()
+                } catch {
+                    AppLogger.playback.error("Failed to save periodic playback position: \(error.localizedDescription, privacy: .private)")
+                    // Backup to UserDefaults as fallback
+                    backupPositionToUserDefaults(currentTime)
+                }
+            }
+        }
+    }
+    
+    // MARK: - UserDefaults Backup for Local Books
+    
+    private var positionBackupKey: String {
+        "localBookPosition_\(book.id.uuidString)"
+    }
+    
+    private func backupPositionToUserDefaults(_ position: Double) {
+        let backup: [String: Any] = [
+            "currentTime": position,
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        UserDefaults.standard.set(backup, forKey: positionBackupKey)
+        AppLogger.playback.debug("Backed up playback position to UserDefaults: \(position)s")
+    }
+    
+    private func clearPositionBackup() {
+        UserDefaults.standard.removeObject(forKey: positionBackupKey)
+    }
+    
+    private func restorePositionFromUserDefaults() -> Double? {
+        guard let dict = UserDefaults.standard.dictionary(forKey: positionBackupKey),
+              let position = dict["currentTime"] as? Double else { return nil }
+        return position
     }
 }

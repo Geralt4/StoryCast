@@ -57,7 +57,10 @@ enum PerformanceDefaults {
     static let searchDebounceNanoseconds: UInt64 = 150_000_000  // 150ms
     
     /// Debounce interval for playback position saves (nanoseconds)
-    static let playbackSaveDebounceNanoseconds: UInt64 = 5_000_000_000  // 5 seconds
+    static let playbackSaveDebounceNanoseconds: UInt64 = 2_000_000_000  // 2 seconds
+    
+    /// Periodic save interval during playback (seconds)
+    static let periodicPlaybackSaveInterval: TimeInterval = 60.0
 }
 
 enum LayoutDefaults {

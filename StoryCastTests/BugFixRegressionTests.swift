@@ -64,10 +64,10 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     }
 
     @MainActor
-    func testSchemaVersionIsV2() {
-        // Verify that the app is using SchemaV2 which includes ABSServer
-        let models = SchemaV2.models
-        XCTAssertTrue(models.contains(where: { $0 == ABSServer.self }), "ABSServer should be in SchemaV2 models")
+    func testSchemaVersionIsV3() {
+        // Verify that the app is using SchemaV3 which includes ABSServer
+        let models = SchemaV3.models
+        XCTAssertTrue(models.contains(where: { $0 == ABSServer.self }), "ABSServer should be in SchemaV3 models")
     }
 
     func testPendingProgressKeyOmitsRawServerURL() async {
