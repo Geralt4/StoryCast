@@ -158,7 +158,7 @@ private extension PlaybackSessionManager {
                                                    currentTime: AudioPlayerService.shared.currentTime,
                                                    timeListened: self?.totalTimeListened ?? 0,
                                                    duration: self?.sessionDuration ?? 0)
-                await self?.clearSession()
+                self?.clearSession()
                 return
             }
             do {
@@ -175,7 +175,7 @@ private extension PlaybackSessionManager {
                                                    timeListened: self?.totalTimeListened ?? 0,
                                                    duration: self?.sessionDuration ?? 0)
             }
-            await self?.clearSession()
+            self?.clearSession()
         }
     }
     

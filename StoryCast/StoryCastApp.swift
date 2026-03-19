@@ -19,7 +19,7 @@ struct StoryCastApp: App {
                 storageBootstrapState = .failed(failure)
                 sharedModelContainer = recoveryContainer
             } else {
-                let schema = Schema(versionedSchema: SchemaV2.self)
+                let schema = Schema(versionedSchema: SchemaV3.self)
                 let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
                 var minimalContainer: ModelContainer?
                 for attempt in 0..<3 {
@@ -35,12 +35,12 @@ struct StoryCastApp: App {
                 if let container = minimalContainer {
                     sharedModelContainer = container
                 } else {
-                    AppLogger.app.critical("Failed to create any ModelContainer after 3 attempts - using SchemaV2 fallback")
+                    AppLogger.app.critical("Failed to create any ModelContainer after 3 attempts - using SchemaV3 fallback")
                     do {
                         let fallback = try ModelContainer(for: schema, configurations: [config])
                         sharedModelContainer = fallback
                     } catch {
-                        AppLogger.app.critical("SchemaV2 fallback also failed: \(error.localizedDescription, privacy: .private)")
+                        AppLogger.app.critical("SchemaV3 fallback also failed: \(error.localizedDescription, privacy: .private)")
                         let emptySchema = Schema()
                         let emptyConfig = ModelConfiguration(schema: emptySchema, isStoredInMemoryOnly: true)
                         do {
@@ -55,7 +55,7 @@ struct StoryCastApp: App {
             }
         case .unrecoverable(let error):
             storageBootstrapState = .unrecoverable(error)
-            let schema = Schema(versionedSchema: SchemaV2.self)
+            let schema = Schema(versionedSchema: SchemaV3.self)
             let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
             do {
                 sharedModelContainer = try ModelContainer(for: schema, configurations: [config])
@@ -145,8 +145,35 @@ struct StoryCastApp: App {
             guard let book = try context.fetch(descriptor).first else { return }
             book.lastPlaybackPosition = currentTime
             try context.save()
+            
+            // Clear any existing UserDefaults backup after successful save
+            let backupKey = "localBookPosition_\(book.id.uuidString)"
+            UserDefaults.standard.removeObject(forKey: backupKey)
         } catch {
             AppLogger.app.error("Failed to save playback position: \(error.localizedDescription, privacy: .private)")
+            // Backup to UserDefaults as fallback for local books
+            if PlaybackSessionManager.shared.activeRemoteItemId != nil {
+                // Remote books use ProgressBackupStore, skip here
+                return
+            }
+            
+            // For local books, backup to UserDefaults
+            let fileName = currentURL.lastPathComponent
+            let isRemoteCache = currentURL.deletingLastPathComponent() == StorageManager.shared.remoteAudioCacheDirectoryURL
+            var descriptor = FetchDescriptor<Book>(predicate: #Predicate { book in
+                isRemoteCache ? book.localCachePath == fileName : book.localFileName == fileName
+            })
+            descriptor.fetchLimit = 1
+            
+            if let book = try? context.fetch(descriptor).first {
+                let backupKey = "localBookPosition_\(book.id.uuidString)"
+                let backup: [String: Any] = [
+                    "currentTime": currentTime,
+                    "timestamp": Date().timeIntervalSince1970
+                ]
+                UserDefaults.standard.set(backup, forKey: backupKey)
+                AppLogger.app.debug("Backed up playback position to UserDefaults: \(currentTime)s")
+            }
         }
     }
 

@@ -174,20 +174,37 @@ enum SchemaV2: VersionedSchema {
     }
 }
 
+// MARK: - Schema V3 (SearchKey Removal)
+
+enum SchemaV3: VersionedSchema {
+    static let versionIdentifier = Schema.Version(3, 0, 0)
+    
+    static var models: [any PersistentModel.Type] {
+        [Book.self, Chapter.self, Folder.self, ABSServer.self]
+    }
+}
+
 // MARK: - Migration Plan
 
 enum StoryCastMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self]
     }
     
     static var stages: [MigrationStage] {
-        [migrateV1toV2]
+        [migrateV1toV2, migrateV2toV3]
     }
     
     static let migrateV1toV2 = MigrationStage.custom(
         fromVersion: SchemaV1.self,
         toVersion: SchemaV2.self,
+        willMigrate: nil,
+        didMigrate: { _ in }
+    )
+    
+    static let migrateV2toV3 = MigrationStage.custom(
+        fromVersion: SchemaV2.self,
+        toVersion: SchemaV3.self,
         willMigrate: nil,
         didMigrate: { _ in }
     )
