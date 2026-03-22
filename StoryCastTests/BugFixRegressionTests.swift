@@ -64,10 +64,40 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     }
 
     @MainActor
-    func testSchemaVersionIsV3() {
-        // Verify that the app is using SchemaV3 which includes ABSServer
-        let models = SchemaV3.models
-        XCTAssertTrue(models.contains(where: { $0 == ABSServer.self }), "ABSServer should be in SchemaV3 models")
+    func testSchemaVersionIsV2() {
+        let models = SchemaV2.models
+        XCTAssertTrue(models.contains(where: { $0 == ABSServer.self }), "ABSServer should be in SchemaV2 models")
+    }
+    
+    @MainActor
+    func testAllSchemaVersionsInMigrationPlanHaveUniqueModels() {
+        // Get all schemas from the migration plan dynamically
+        let schemas = StoryCastMigrationPlan.schemas
+        
+        // Must have at least one schema
+        XCTAssertFalse(schemas.isEmpty, "Migration plan must have at least one schema")
+        
+        // Check each consecutive pair has different models
+        for i in 0..<(schemas.count - 1) {
+            let currentSchema = schemas[i]
+            let nextSchema = schemas[i + 1]
+            
+            let currentModels = currentSchema.models
+                .map { String(describing: $0) }
+                .sorted()
+            let nextModels = nextSchema.models
+                .map { String(describing: $0) }
+                .sorted()
+            
+            XCTAssertNotEqual(
+                currentModels,
+                nextModels,
+                "Schema versions \(currentSchema) and \(nextSchema) have identical models. " +
+                "This causes NSStagedMigrationManager to crash. " +
+                "Each schema version must have different models. " +
+                "Current: \(currentModels), Next: \(nextModels)"
+            )
+        }
     }
 
     func testPendingProgressKeyOmitsRawServerURL() async {
