@@ -15,6 +15,15 @@ struct ContentView: View {
                 contentBody
             case .failed(let failure):
                 StorageRecoveryView(failure: failure)
+            case .versionMismatch(let error):
+                StorageVersionMismatchView(
+                    error: error,
+                    onRecoveryComplete: { _ in
+                        // Recovery completed - user needs to restart the app
+                        // The storageBootstrapState in the parent still reflects the old state
+                        // User has been shown the restart message
+                    }
+                )
             case .unrecoverable(let error):
                 FatalErrorView(error: error, onReset: {
                     Task {

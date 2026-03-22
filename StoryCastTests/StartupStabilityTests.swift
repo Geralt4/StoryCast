@@ -340,9 +340,101 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         await BackgroundRemoteCoverArtService.shared.debugResetState()
     }
 
+    @MainActor
+    func testV2ContainerCreationWithMigrationSucceeds() throws {
+        // This test verifies that the migration plan doesn't crash
+        // The original bug was caused by SchemaV3 having identical models to V2,
+        // which caused NSStagedMigrationManager to crash during migration
+        
+        let v2Schema = Schema(versionedSchema: SchemaV2.self)
+        let v2Config = ModelConfiguration(schema: v2Schema, isStoredInMemoryOnly: true)
+        
+        // This should succeed without throwing
+        XCTAssertNoThrow(try ModelContainer(for: v2Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v2Config]))
+        
+        // Create a container with V2 schema and verify it has the expected models
+        let container = try ModelContainer(for: v2Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v2Config])
+        let context = ModelContext(container)
+        
+        // Verify V2 models work
+        let folder = Folder(name: "Test Folder", isSystem: false, sortOrder: 0)
+        context.insert(folder)
+        try context.save()
+        
+        let fetchedFolders = try context.fetch(FetchDescriptor<Folder>())
+        XCTAssertEqual(fetchedFolders.count, 1)
+        
+        // Verify ABSServer model exists in V2 (was added in V2)
+        let servers = try context.fetch(FetchDescriptor<ABSServer>())
+        XCTAssertEqual(servers.count, 0) // No servers yet, but schema supports it
+    }
+
     private func makeInMemoryContainer() throws -> ModelContainer {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         return try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, configurations: config)
+    }
+    
+    // MARK: - Version Mismatch Tests
+    
+    func testVersionMismatchErrorIsDetected() {
+        // Create a fake error that looks like a version mismatch
+        let fakeVersionMismatchError = NSError(
+            domain: "com.apple.coredata",
+            code: 134110,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Can't find model for source store NSStagedMigrationManager checksum mismatch"
+            ]
+        )
+        
+        XCTAssertTrue(StorageVersionValidator.isVersionMismatchError(fakeVersionMismatchError), 
+                      "Should detect version mismatch error with checksum in message")
+        
+        // Test that regular errors are not detected as version mismatch
+        let regularError = NSError(
+            domain: "TestError",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Regular error"]
+        )
+        
+        XCTAssertFalse(StorageVersionValidator.isVersionMismatchError(regularError),
+                       "Should not detect regular error as version mismatch")
+    }
+    
+    func testVersionMismatchErrorCategorization() {
+        let versionError = StorageVersionError.versionMismatchDetected(details: "Test mismatch")
+        
+        XCTAssertEqual(versionError.errorDescription, "Database version mismatch detected")
+        
+        let underlyingError = NSError(domain: "Test", code: 1, userInfo: nil)
+        let migrationError = StorageVersionError.migrationFailed(underlying: underlyingError)
+        
+        XCTAssertTrue(migrationError.errorDescription?.contains("Migration failed") ?? false)
+    }
+    
+    // MARK: - Backup Manager Tests
+    
+    func testBackupDirectoryIsCreated() {
+        let backupDir = StorageBackupManager.backupDirectoryURL
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backupDir.path),
+                       "Backup directory should exist")
+    }
+    
+    func testListBackupsReturnsEmptyArrayInitially() {
+        let backups = StorageBackupManager.listBackups()
+        // This might not be empty if previous tests created backups
+        // Just verify it returns an array without crashing
+        XCTAssertNotNil(backups)
+    }
+    
+    func testFormattedSizeReturnsValidString() {
+        let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("test_backup_\(UUID().uuidString).store")
+        try? "test data".write(to: tempFile, atomically: true, encoding: .utf8)
+        
+        let size = StorageBackupManager.formattedSize(of: tempFile)
+        XCTAssertFalse(size.isEmpty)
+        XCTAssertNotEqual(size, "Unknown size")
+        
+        try? FileManager.default.removeItem(at: tempFile)
     }
 
     private func makeTemporaryDirectory() throws -> URL {

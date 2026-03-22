@@ -26,7 +26,7 @@ nonisolated final class RemoteLibraryServiceTests: XCTestCase {
 
         XCTAssertEqual(service.coverArtFailures.count, 1)
 
-        service.retryCoverArtDownload(for: bookId, container: try! makeInMemoryContainer())
+        XCTAssertNoThrow(try service.retryCoverArtDownload(for: bookId, container: makeInMemoryContainer()))
 
         XCTAssertTrue(service.coverArtFailures.isEmpty)
     }
@@ -42,7 +42,7 @@ nonisolated final class RemoteLibraryServiceTests: XCTestCase {
 
         XCTAssertEqual(service.coverArtFailures.count, 2)
 
-        service.retryAllCoverArtDownloads(container: try! makeInMemoryContainer())
+        XCTAssertNoThrow(try service.retryAllCoverArtDownloads(container: makeInMemoryContainer()))
 
         XCTAssertTrue(service.coverArtFailures.isEmpty)
     }

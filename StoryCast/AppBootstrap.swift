@@ -5,6 +5,7 @@ import SwiftData
 enum StorageBootstrapState: Sendable {
     case ready(ModelContainer)
     case failed(StorageInitializationFailure)
+    case versionMismatch(StorageVersionError)
     case unrecoverable(Error)
 }
 
@@ -26,13 +27,26 @@ enum AppBootstrap {
     nonisolated static func makeStorageBootstrapState(
         containerFactory: ContainerFactory = defaultContainerFactory
     ) -> StorageBootstrapState {
-        let schema = Schema(versionedSchema: SchemaV3.self)
+        let schema = Schema(versionedSchema: SchemaV2.self)
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
         do {
             let container = try containerFactory(schema, migrationPlan, [config])
             return .ready(container)
         } catch {
+            // Check for version mismatch before treating as generic failure
+            let categorizedError = StorageVersionValidator.categorize(error)
+            
+            if case .versionMismatchDetected = categorizedError {
+                // Log analytics event
+                StorageVersionValidator.logVersionMismatchEvent(
+                    error: categorizedError,
+                    schemaVersion: CurrentSchema.versionString
+                )
+                return .versionMismatch(categorizedError)
+            }
+            
+            // For migration or unknown errors, proceed with generic failure
             AppLogger.app.critical("Failed to open persistent model container: \(error.localizedDescription)")
             return .failed(
                 StorageInitializationFailure(
@@ -53,13 +67,14 @@ enum AppBootstrap {
     }
 
     nonisolated static func makeRecoveryContainer() -> ModelContainer? {
-        let schema = Schema(versionedSchema: SchemaV3.self)
+        let schema = Schema(versionedSchema: SchemaV2.self)
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
 
         var lastError: Error?
         for attempt in 1...3 {
             do {
-                return try ModelContainer(for: schema, migrationPlan: migrationPlan, configurations: [config])
+                // Recovery containers don't need migration - they start fresh in memory
+                return try ModelContainer(for: schema, configurations: [config])
             } catch {
                 lastError = error
                 AppLogger.app.error("Recovery container attempt \(attempt) failed: \(error.localizedDescription)")
@@ -71,5 +86,54 @@ enum AppBootstrap {
         
         AppLogger.app.critical("All recovery container attempts failed: \(lastError?.localizedDescription ?? "unknown")")
         return nil
+    }
+    
+    // MARK: - Recovery Operations
+    
+    /// Attempts recovery by backing up and recreating the database
+    /// Returns the new container, or nil if recovery failed
+    nonisolated static func attemptRecovery() async -> ModelContainer? {
+        let state = await performFreshStart()
+        
+        switch state {
+        case .ready(let container):
+            return container
+        default:
+            return nil
+        }
+    }
+    
+    /// Starts fresh: backs up, deletes old database, creates new one
+    /// Returns the new bootstrap state
+    nonisolated static func startFresh() async -> StorageBootstrapState {
+        await performFreshStart()
+    }
+    
+    /// Shared implementation for recovery operations
+    /// Backs up old database, deletes it, creates new persistent container
+    private nonisolated static func performFreshStart() async -> StorageBootstrapState {
+        // 1. Backup existing database BEFORE any deletion
+        let backupURL = StorageBackupManager.backupDatabase()
+        if let backupURL = backupURL {
+            AppLogger.app.info("Created backup before recovery: \(backupURL.path)")
+        }
+        
+        // 2. Delete all database files
+        StorageBackupManager.deleteDatabaseFiles()
+        
+        // 3. Create NEW persistent container (NOT in-memory!)
+        let schema = Schema(versionedSchema: SchemaV2.self)
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        
+        do {
+            let container = try ModelContainer(for: schema, migrationPlan: migrationPlan, configurations: [config])
+            AppLogger.app.info("Successfully created fresh persistent database")
+            return .ready(container)
+        } catch {
+            AppLogger.app.critical("Failed to create fresh database: \(error.localizedDescription)")
+            return .unrecoverable(
+                StorageUnrecoverableError(message: "Unable to create fresh database")
+            )
+        }
     }
 }
