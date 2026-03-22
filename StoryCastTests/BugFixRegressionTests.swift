@@ -71,9 +71,9 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     }
 
     func testPendingProgressKeyOmitsRawServerURL() async {
-        let manager = await MainActor.run { PlaybackSessionManager.shared }
+        let store = await MainActor.run { ProgressBackupStore.shared }
         let key = await MainActor.run {
-            manager.debugPendingProgressKey(serverURL: "https://abs.example.com:13378", itemId: "item123")
+            store.debugPendingProgressKey(serverURL: "https://abs.example.com:13378", itemId: "item123")
         }
 
         XCTAssertFalse(key.contains("abs.example.com"))
@@ -83,11 +83,11 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     func testPendingProgressBackupCanBeStoredAndCleared() async {
         let serverURL = "https://abs.example.com:13378"
         let itemId = "item123"
-        let manager = await MainActor.run { PlaybackSessionManager.shared }
+        let store = await MainActor.run { ProgressBackupStore.shared }
 
         await MainActor.run {
-            manager.debugClearPendingProgress(serverURL: serverURL, itemId: itemId)
-            manager.debugBackupProgress(
+            store.debugClear(serverURL: serverURL, itemId: itemId)
+            store.debugBackup(
                 serverURL: serverURL,
                 itemId: itemId,
                 currentTime: 245,
@@ -97,16 +97,16 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
         }
 
         let hasPendingProgress = await MainActor.run {
-            manager.debugHasPendingProgress(serverURL: serverURL, itemId: itemId)
+            store.debugHasPending(serverURL: serverURL, itemId: itemId)
         }
         XCTAssertTrue(hasPendingProgress)
 
         await MainActor.run {
-            manager.debugClearPendingProgress(serverURL: serverURL, itemId: itemId)
+            store.debugClear(serverURL: serverURL, itemId: itemId)
         }
 
         let hasPendingProgressAfterClear = await MainActor.run {
-            manager.debugHasPendingProgress(serverURL: serverURL, itemId: itemId)
+            store.debugHasPending(serverURL: serverURL, itemId: itemId)
         }
         XCTAssertFalse(hasPendingProgressAfterClear)
     }
