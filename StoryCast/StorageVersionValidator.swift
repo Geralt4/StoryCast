@@ -34,7 +34,13 @@ nonisolated enum StorageVersionValidator {
             "version",
             "NSStagedMigrationManager",
             "findCurrentMigrationStage",
-            "identical models"
+            "identical models",
+            "Unable to find source model",
+            "model version",
+            "model mismatch",
+            "incompatible version",
+            "store version",
+            "metadata mismatch"
         ]
     }
     

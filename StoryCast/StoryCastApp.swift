@@ -19,7 +19,7 @@ struct StoryCastApp: App {
                 storageBootstrapState = .failed(failure)
                 sharedModelContainer = recoveryContainer
             } else {
-                let schema = Schema(versionedSchema: SchemaV2.self)
+                let schema = Schema(versionedSchema: SchemaV3.self)
                 let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
                 var minimalContainer: ModelContainer?
                 for attempt in 0..<3 {
@@ -65,7 +65,7 @@ struct StoryCastApp: App {
             }
         case .unrecoverable(let error):
             storageBootstrapState = .unrecoverable(error)
-            let schema = Schema(versionedSchema: SchemaV2.self)
+            let schema = Schema(versionedSchema: SchemaV3.self)
             let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
             do {
                 sharedModelContainer = try ModelContainer(for: schema, configurations: [config])

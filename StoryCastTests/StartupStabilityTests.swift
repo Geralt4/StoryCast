@@ -342,21 +342,14 @@ nonisolated final class StartupStabilityTests: XCTestCase {
 
     @MainActor
     func testV2ContainerCreationWithMigrationSucceeds() throws {
-        // This test verifies that the migration plan doesn't crash
-        // The original bug was caused by SchemaV3 having identical models to V2,
-        // which caused NSStagedMigrationManager to crash during migration
-        
         let v2Schema = Schema(versionedSchema: SchemaV2.self)
         let v2Config = ModelConfiguration(schema: v2Schema, isStoredInMemoryOnly: true)
         
-        // This should succeed without throwing
         XCTAssertNoThrow(try ModelContainer(for: v2Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v2Config]))
         
-        // Create a container with V2 schema and verify it has the expected models
         let container = try ModelContainer(for: v2Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v2Config])
         let context = ModelContext(container)
         
-        // Verify V2 models work
         let folder = Folder(name: "Test Folder", isSystem: false, sortOrder: 0)
         context.insert(folder)
         try context.save()
@@ -364,14 +357,159 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         let fetchedFolders = try context.fetch(FetchDescriptor<Folder>())
         XCTAssertEqual(fetchedFolders.count, 1)
         
-        // Verify ABSServer model exists in V2 (was added in V2)
         let servers = try context.fetch(FetchDescriptor<ABSServer>())
-        XCTAssertEqual(servers.count, 0) // No servers yet, but schema supports it
+        XCTAssertEqual(servers.count, 0)
+    }
+    
+    @MainActor
+    func testV3ContainerCreationWithMigrationSucceeds() throws {
+        let v3Schema = Schema(versionedSchema: SchemaV3.self)
+        let v3Config = ModelConfiguration(schema: v3Schema, isStoredInMemoryOnly: true)
+        
+        XCTAssertNoThrow(try ModelContainer(for: v3Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v3Config]))
+        
+        let container = try ModelContainer(for: v3Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v3Config])
+        let context = ModelContext(container)
+        
+        let folder = Folder(name: "Test Folder V3", isSystem: false, sortOrder: 0)
+        context.insert(folder)
+        try context.save()
+        
+        let fetchedFolders = try context.fetch(FetchDescriptor<Folder>())
+        XCTAssertEqual(fetchedFolders.count, 1)
+        
+        let servers = try context.fetch(FetchDescriptor<ABSServer>())
+        XCTAssertEqual(servers.count, 0)
+    }
+    
+    @MainActor
+    func testV3DatabaseFileCanBeReopenedWithMigrationPlan() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("V3Test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        tempURLs.append(tempDir)
+        
+        let storeURL = tempDir.appendingPathComponent("test.store")
+        let schema = Schema(versionedSchema: SchemaV3.self)
+        let config = ModelConfiguration(schema: schema, url: storeURL)
+        
+        let container = try ModelContainer(for: schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [config])
+        let context = ModelContext(container)
+        
+        let folder = Folder(name: "Test Folder", isSystem: false, sortOrder: 0)
+        context.insert(folder)
+        let book = Book(title: "Test Book", author: "Test Author", duration: 3600, folder: folder)
+        context.insert(book)
+        let server = ABSServer(name: "Test Server", url: "https://example.com", username: "user")
+        context.insert(server)
+        try context.save()
+        
+        let bookId = book.id
+        let serverId = server.id
+        
+        context.processPendingChanges()
+        try context.save()
+        
+        let reopenedSchema = Schema(versionedSchema: SchemaV3.self)
+        let reopenedConfig = ModelConfiguration(schema: reopenedSchema, url: storeURL)
+        
+        let reopenedContainer = try ModelContainer(for: reopenedSchema, migrationPlan: StoryCastMigrationPlan.self, configurations: [reopenedConfig])
+        let newContext = ModelContext(reopenedContainer)
+        
+        let bookDescriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.id == bookId })
+        let fetchedBook = try newContext.fetch(bookDescriptor).first
+        XCTAssertEqual(fetchedBook?.title, "Test Book")
+        XCTAssertEqual(fetchedBook?.author, "Test Author")
+        XCTAssertEqual(fetchedBook?.duration, 3600)
+        
+        let serverDescriptor = FetchDescriptor<ABSServer>(predicate: #Predicate { $0.id == serverId })
+        let fetchedServer = try newContext.fetch(serverDescriptor).first
+        XCTAssertEqual(fetchedServer?.name, "Test Server")
+    }
+    
+    @MainActor
+    func testV2DatabaseMigratesToV3WhenReopened() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("V2ToV3Test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        tempURLs.append(tempDir)
+        
+        let storeURL = tempDir.appendingPathComponent("test.store")
+        let v2Schema = Schema(versionedSchema: SchemaV2.self)
+        let v2Config = ModelConfiguration(schema: v2Schema, url: storeURL)
+        
+        let v2Container = try ModelContainer(for: v2Schema, configurations: [v2Config])
+        let v2Context = ModelContext(v2Container)
+        
+        let folder = Folder(name: "V2 Folder", isSystem: false, sortOrder: 0)
+        v2Context.insert(folder)
+        let book = Book(title: "V2 Book", author: "V2 Author", duration: 1800, folder: folder)
+        v2Context.insert(book)
+        try v2Context.save()
+        
+        let bookId = book.id
+        
+        v2Context.processPendingChanges()
+        try v2Context.save()
+        
+        let v3Schema = Schema(versionedSchema: SchemaV3.self)
+        let v3Config = ModelConfiguration(schema: v3Schema, url: storeURL)
+        
+        XCTAssertNoThrow(try ModelContainer(for: v3Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v3Config]))
+        
+        let v3Container = try ModelContainer(for: v3Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v3Config])
+        let v3Context = ModelContext(v3Container)
+        
+        let bookDescriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.id == bookId })
+        let migratedBook = try v3Context.fetch(bookDescriptor).first
+        XCTAssertEqual(migratedBook?.title, "V2 Book")
+        XCTAssertEqual(migratedBook?.author, "V2 Author")
+        XCTAssertEqual(migratedBook?.duration, 1800)
+    }
+    
+    @MainActor
+    func testAppBootstrapOpensExistingV3DatabaseFile() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BootstrapV3Test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        tempURLs.append(tempDir)
+        
+        let storeURL = tempDir.appendingPathComponent("default.store")
+        let schema = Schema(versionedSchema: SchemaV3.self)
+        let config = ModelConfiguration(schema: schema, url: storeURL)
+        
+        let container = try ModelContainer(for: schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [config])
+        let context = ModelContext(container)
+        
+        let folder = Folder(name: "User Folder", isSystem: false, sortOrder: 0)
+        context.insert(folder)
+        let book = Book(title: "User Book", author: "User Author", duration: 7200, folder: folder)
+        context.insert(book)
+        try context.save()
+        
+        let bookId = book.id
+        
+        context.processPendingChanges()
+        try context.save()
+        
+        let state = AppBootstrap.makeStorageBootstrapState { schema, migrationPlan, configurations in
+            let testConfig = ModelConfiguration(schema: schema, url: storeURL)
+            return try ModelContainer(for: schema, migrationPlan: migrationPlan, configurations: [testConfig])
+        }
+        
+        guard case .ready(let reopenedContainer) = state else {
+            return XCTFail("Expected bootstrap to succeed with existing V3 database")
+        }
+        
+        let newContext = ModelContext(reopenedContainer)
+        let bookDescriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.id == bookId })
+        let fetchedBook = try newContext.fetch(bookDescriptor).first
+        XCTAssertEqual(fetchedBook?.title, "User Book")
     }
 
     private func makeInMemoryContainer() throws -> ModelContainer {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        return try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, configurations: config)
+        return try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
     }
     
     // MARK: - Version Mismatch Tests

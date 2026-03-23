@@ -64,20 +64,26 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     }
 
     @MainActor
-    func testSchemaVersionIsV2() {
-        let models = SchemaV2.models
-        XCTAssertTrue(models.contains(where: { $0 == ABSServer.self }), "ABSServer should be in SchemaV2 models")
+    func testSchemaVersionIsV3() {
+        let models = SchemaV3.models
+        XCTAssertTrue(models.contains(where: { $0 == ABSServer.self }), "ABSServer should be in SchemaV3 models")
+    }
+    
+    @MainActor
+    func testMigrationPlanSupportsV1V2V3() {
+        let schemas = StoryCastMigrationPlan.schemas
+        XCTAssertEqual(schemas.count, 3, "Migration plan should support V1, V2, and V3")
+        XCTAssertTrue(schemas.contains { $0 == SchemaV1.self })
+        XCTAssertTrue(schemas.contains { $0 == SchemaV2.self })
+        XCTAssertTrue(schemas.contains { $0 == SchemaV3.self })
     }
     
     @MainActor
     func testAllSchemaVersionsInMigrationPlanHaveUniqueModels() {
-        // Get all schemas from the migration plan dynamically
         let schemas = StoryCastMigrationPlan.schemas
         
-        // Must have at least one schema
         XCTAssertFalse(schemas.isEmpty, "Migration plan must have at least one schema")
         
-        // Check each consecutive pair has different models
         for i in 0..<(schemas.count - 1) {
             let currentSchema = schemas[i]
             let nextSchema = schemas[i + 1]
@@ -144,7 +150,7 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     @MainActor
     func testFolderSortOrderIncrementsCorrectly() throws {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, configurations: config)
+        let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
         let operations = LibraryFolderOperations(modelContext: context)
         
@@ -166,7 +172,7 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     @MainActor
     func testCreateFolderWithEmptyNameUsesDefaultName() throws {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, configurations: config)
+        let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
         let operations = LibraryFolderOperations(modelContext: context)
         
@@ -178,7 +184,7 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     @MainActor
     func testFolderOperationsPersistCorrectly() throws {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, configurations: config)
+        let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
         let operations = LibraryFolderOperations(modelContext: context)
 
