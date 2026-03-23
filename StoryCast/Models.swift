@@ -164,6 +164,17 @@ class Folder {
     }
 }
 
+@Model
+class SchemaV3Marker {
+    @Attribute(.unique) var id: UUID
+    var schemaVersion: Int
+    
+    init(id: UUID = UUID(), schemaVersion: Int = 3) {
+        self.id = id
+        self.schemaVersion = schemaVersion
+    }
+}
+
 // MARK: - Schema V2 (Remote Books Support)
 
 enum SchemaV2: VersionedSchema {
@@ -174,34 +185,44 @@ enum SchemaV2: VersionedSchema {
     }
 }
 
+// MARK: - Schema V3 (Current)
+
+enum SchemaV3: VersionedSchema {
+    static let versionIdentifier = Schema.Version(3, 0, 0)
+    
+    static var models: [any PersistentModel.Type] {
+        [Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self]
+    }
+}
+
 // MARK: - Migration Plan
 
-// IMPORTANT: Each schema version MUST have different models.
-// Identical schemas cause NSStagedMigrationManager to crash during migration.
-// See: https://developer.apple.com/documentation/swiftdata/migrationstage
-// Test coverage: BugFixRegressionTests.testAllSchemaVersionsInMigrationPlanHaveUniqueModels
 enum StoryCastMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self]
     }
     
     static var stages: [MigrationStage] {
-        [migrateV1toV2]
+        [migrateV1toV2, migrateV2toV3]
     }
     
-    // V1→V2 adds ABSServer model - lightweight migration handles this
     static let migrateV1toV2 = MigrationStage.lightweight(
         fromVersion: SchemaV1.self,
         toVersion: SchemaV2.self
+    )
+    
+    static let migrateV2toV3 = MigrationStage.custom(
+        fromVersion: SchemaV2.self,
+        toVersion: SchemaV3.self,
+        willMigrate: nil,
+        didMigrate: { _ in }
     )
 }
 
 // MARK: - Current Schema Version
 
-/// The current active schema version for StoryCast.
-/// Update this when adding new schema versions.
 nonisolated enum CurrentSchema {
-    static let version = SchemaV2.versionIdentifier
-    static let versionString = "2.0.0"
-    static let schemaName = "SchemaV2"
+    static let version = SchemaV3.versionIdentifier
+    static let versionString = "3.0.0"
+    static let schemaName = "SchemaV3"
 }

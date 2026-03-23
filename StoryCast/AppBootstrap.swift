@@ -27,7 +27,7 @@ enum AppBootstrap {
     nonisolated static func makeStorageBootstrapState(
         containerFactory: ContainerFactory = defaultContainerFactory
     ) -> StorageBootstrapState {
-        let schema = Schema(versionedSchema: SchemaV2.self)
+        let schema = Schema(versionedSchema: SchemaV3.self)
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
         do {
@@ -67,7 +67,7 @@ enum AppBootstrap {
     }
 
     nonisolated static func makeRecoveryContainer() -> ModelContainer? {
-        let schema = Schema(versionedSchema: SchemaV2.self)
+        let schema = Schema(versionedSchema: SchemaV3.self)
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
 
         var lastError: Error?
@@ -122,7 +122,7 @@ enum AppBootstrap {
         StorageBackupManager.deleteDatabaseFiles()
         
         // 3. Create NEW persistent container (NOT in-memory!)
-        let schema = Schema(versionedSchema: SchemaV2.self)
+        let schema = Schema(versionedSchema: SchemaV3.self)
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         
         do {

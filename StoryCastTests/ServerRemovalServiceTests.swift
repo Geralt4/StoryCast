@@ -76,7 +76,7 @@ nonisolated final class ServerRemovalServiceTests: XCTestCase {
 
     private func makeInMemoryContainer() throws -> ModelContainer {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
-        return try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, configurations: config)
+        return try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
     }
 }
 
