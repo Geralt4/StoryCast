@@ -77,7 +77,11 @@ struct LibraryView: View {
                 Button("Cancel", role: .cancel) { coordinator.finishFolderDeletion() }
                 Button("Delete", role: .destructive) {
                     HapticManager.impact(.heavy); HapticManager.notification(.success)
-                    if let folder = coordinator.folderToDelete, let unfiled = unfiledFolder { folderOperations.deleteFolderWithDestination(folder, destination: unfiled) }
+                    if let folder = coordinator.folderToDelete, let unfiled = unfiledFolder {
+                        folderOperations.deleteFolderWithDestination(folder, destination: unfiled)
+                    } else {
+                        AppLogger.app.error("LibraryView: cannot delete folder — unfiledFolder is nil")
+                    }
                     coordinator.finishFolderDeletion()
                 }
             } message: { Text("This will move all books in this folder to Unfiled. Continue?") }

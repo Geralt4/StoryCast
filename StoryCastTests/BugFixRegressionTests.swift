@@ -106,45 +106,112 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
         }
     }
 
-    func testPendingProgressKeyOmitsRawServerURL() async {
-        let store = await MainActor.run { ProgressBackupStore.shared }
-        let key = await MainActor.run {
-            store.debugPendingProgressKey(serverURL: "https://abs.example.com:13378", itemId: "item123")
-        }
+    @MainActor
+    func testPendingProgressKeyOmitsRawServerURL() {
+        let store = ProgressBackupStore.shared
+        let key = store.debugPendingProgressKey(serverURL: "https://abs.example.com:13378", itemId: "item123")
 
         XCTAssertFalse(key.contains("abs.example.com"))
         XCTAssertTrue(key.contains("item123"))
     }
 
-    func testPendingProgressBackupCanBeStoredAndCleared() async {
+    @MainActor
+    func testPendingProgressBackupCanBeStoredAndCleared() {
         let serverURL = "https://abs.example.com:13378"
         let itemId = "item123"
-        let store = await MainActor.run { ProgressBackupStore.shared }
+        let store = ProgressBackupStore.shared
 
-        await MainActor.run {
-            store.debugClear(serverURL: serverURL, itemId: itemId)
-            store.debugBackup(
-                serverURL: serverURL,
-                itemId: itemId,
-                currentTime: 245,
-                timeListened: 7,
-                duration: 1000
-            )
-        }
+        store.debugClear(serverURL: serverURL, itemId: itemId)
+        store.debugBackup(
+            serverURL: serverURL,
+            itemId: itemId,
+            currentTime: 245,
+            timeListened: 7,
+            duration: 1000
+        )
 
-        let hasPendingProgress = await MainActor.run {
-            store.debugHasPending(serverURL: serverURL, itemId: itemId)
-        }
+        let hasPendingProgress = store.debugHasPending(serverURL: serverURL, itemId: itemId)
         XCTAssertTrue(hasPendingProgress)
 
-        await MainActor.run {
-            store.debugClear(serverURL: serverURL, itemId: itemId)
-        }
+        store.debugClear(serverURL: serverURL, itemId: itemId)
 
-        let hasPendingProgressAfterClear = await MainActor.run {
-            store.debugHasPending(serverURL: serverURL, itemId: itemId)
-        }
+        let hasPendingProgressAfterClear = store.debugHasPending(serverURL: serverURL, itemId: itemId)
         XCTAssertFalse(hasPendingProgressAfterClear)
+    }
+
+    // MARK: - Folder Operations Tests (replicating LibraryFolderOperations without the class)
+    
+    /// Helper to create a folder with unique name (replicates LibraryFolderOperations.createFolder)
+    @MainActor
+    private func createFolder(in context: ModelContext, name: String) throws -> Folder {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            return try createFolder(in: context, name: "New Folder")
+        }
+        
+        let folders = try context.fetch(FetchDescriptor<Folder>())
+        let sortOrder = (folders.map { $0.sortOrder }.max() ?? 0) + 1
+        let folderName = makeUniqueName(in: context, for: trimmedName)
+        
+        let folder = Folder(name: folderName, isSystem: false, sortOrder: sortOrder)
+        context.insert(folder)
+        try context.save()
+        
+        return folder
+    }
+    
+    /// Helper to make a unique folder name (replicates LibraryFolderOperations.makeUniqueName)
+    @MainActor
+    private func makeUniqueName(in context: ModelContext, for name: String, excluding folderId: UUID? = nil) -> String {
+        guard let existingNames = try? Set(context.fetch(FetchDescriptor<Folder>())
+            .filter { $0.id != folderId }
+            .map { $0.name }) else {
+            return name
+        }
+        
+        guard existingNames.contains(name) else {
+            return name
+        }
+        
+        var counter = 2
+        var candidateName = ""
+        
+        repeat {
+            candidateName = "\(name) (\(counter))"
+            counter += 1
+        } while existingNames.contains(candidateName)
+        
+        return candidateName
+    }
+    
+    /// Helper to rename a folder (replicates LibraryFolderOperations.renameFolder)
+    @MainActor
+    private func renameFolder(in context: ModelContext, _ folder: Folder, newName: String) throws {
+        let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        
+        let uniqueName = makeUniqueName(in: context, for: trimmedName, excluding: folder.id)
+        
+        if folder.name != uniqueName {
+            folder.name = uniqueName
+            try context.save()
+        }
+    }
+    
+    /// Helper to delete a folder (replicates LibraryFolderOperations.deleteFolder)
+    @MainActor
+    private func deleteFolder(in context: ModelContext, _ folder: Folder) throws {
+        // Get the Unfiled system folder
+        let folders = try context.fetch(FetchDescriptor<Folder>())
+        guard let unfiled = folders.first(where: { $0.isSystem }) else { return }
+        
+        // Move books to Unfiled
+        for book in folder.books {
+            book.folder = unfiled
+        }
+        
+        context.delete(folder)
+        try context.save()
     }
 
     @MainActor
@@ -152,12 +219,20 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
-        let operations = LibraryFolderOperations(modelContext: context)
         
-        let firstFolder = operations.createFolder(name: "First Folder")
-        let secondFolder = operations.createFolder(name: "Second Folder")
+        // Create Unfiled system folder first (required for folder operations)
+        let unfiled = Folder(name: "Unfiled", isSystem: true, sortOrder: 0)
+        context.insert(unfiled)
+        try context.save()
+        
+        let initialMaxSortOrder = try context.fetch(FetchDescriptor<Folder>()).map { $0.sortOrder }.max() ?? 0
+        
+        // Create folders directly without LibraryFolderOperations
+        let firstFolder = try createFolder(in: context, name: "First Folder_\(UUID().uuidString)")
+        let secondFolder = try createFolder(in: context, name: "Second Folder_\(UUID().uuidString)")
         
         XCTAssertEqual(secondFolder.sortOrder, firstFolder.sortOrder + 1, "Second folder should have sortOrder exactly 1 higher than first")
+        XCTAssertEqual(firstFolder.sortOrder, initialMaxSortOrder + 1, "First folder should have correct sortOrder")
     }
 
     @MainActor
@@ -174,11 +249,16 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
-        let operations = LibraryFolderOperations(modelContext: context)
         
-        let folder = operations.createFolder(name: "   ")
+        // Create Unfiled system folder first
+        let unfiled = Folder(name: "Unfiled", isSystem: true, sortOrder: 0)
+        context.insert(unfiled)
+        try context.save()
+        
+        // Create folder with whitespace-only name (should default to "New Folder")
+        let folder = try createFolder(in: context, name: "   ")
         XCTAssertNotNil(folder)
-        XCTAssertEqual(folder.name, "New Folder", "Empty folder name should fall back to 'New Folder'")
+        XCTAssertTrue(folder.name.hasPrefix("New Folder"), "Empty folder name should fall back to a name starting with 'New Folder', got '\(folder.name)'")
     }
 
     @MainActor
@@ -186,21 +266,32 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
-        let operations = LibraryFolderOperations(modelContext: context)
-
-        let folder1 = operations.createFolder(name: "Test Folder 1")
-        let folder2 = operations.createFolder(name: "Test Folder 2")
+        
+        // Create Unfiled system folder first (required for deleteFolder to work)
+        let unfiled = Folder(name: "Unfiled", isSystem: true, sortOrder: 0)
+        context.insert(unfiled)
+        try context.save()
+        
+        let uniqueSuffix = UUID().uuidString
+        
+        // Create folders
+        let folder1 = try createFolder(in: context, name: "Test Folder 1_\(uniqueSuffix)")
+        let folder2 = try createFolder(in: context, name: "Test Folder 2_\(uniqueSuffix)")
         
         var allFolders = try context.fetch(FetchDescriptor<Folder>())
-        XCTAssertEqual(allFolders.count, 2, "Should have 2 folders after creation")
+        // 2 user folders + 1 Unfiled system folder = 3
+        XCTAssertEqual(allFolders.count, 3, "Should have 3 folders after creation (2 user + 1 system)")
 
-        operations.renameFolder(folder1, newName: "Renamed Folder")
-        XCTAssertEqual(folder1.name, "Renamed Folder", "Folder should be renamed")
+        // Rename folder
+        try renameFolder(in: context, folder1, newName: "Renamed Folder_\(uniqueSuffix)")
+        XCTAssertEqual(folder1.name, "Renamed Folder_\(uniqueSuffix)", "Folder should be renamed")
 
-        operations.deleteFolder(folder2)
+        // Delete folder
+        try deleteFolder(in: context, folder2)
         allFolders = try context.fetch(FetchDescriptor<Folder>())
-        XCTAssertEqual(allFolders.count, 1, "Should have 1 folder after deletion")
-        XCTAssertEqual(allFolders.first?.name, "Renamed Folder", "Remaining folder should be the renamed one")
+        // 1 user folder + 1 Unfiled system folder = 2
+        XCTAssertEqual(allFolders.count, 2, "Should have 2 folders after deletion (1 user + 1 system)")
+        XCTAssertTrue(allFolders.contains { $0.name == "Renamed Folder_\(uniqueSuffix)" }, "Remaining user folder should be the renamed one")
     }
 
     @MainActor

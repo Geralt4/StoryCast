@@ -34,7 +34,6 @@ final class ProgressBackupStore {
         let key = pendingProgressKey(serverURL: server.normalizedURL, itemId: itemId)
         guard let backup = UserDefaults.standard.dictionary(forKey: key),
               let currentTime = backup["currentTime"] as? Double,
-              let _ = backup["timeListened"] as? Double,
               let duration = backup["duration"] as? Double else {
             return
         }

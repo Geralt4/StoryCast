@@ -136,7 +136,14 @@ enum AudiobookshelfURLValidator {
 
     nonisolated private static func isSafePath(_ percentEncodedPath: String) -> Bool {
         let path = (percentEncodedPath.removingPercentEncoding ?? percentEncodedPath)
-        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+        // Apply decoding iteratively to catch double-encoded paths like %252e%252e
+        let decodedPath: String
+        if let secondDecode = path.removingPercentEncoding, secondDecode != path {
+            decodedPath = secondDecode
+        } else {
+            decodedPath = path
+        }
+        let components = decodedPath.split(separator: "/", omittingEmptySubsequences: true)
         return !components.contains(where: { $0 == "." || $0 == ".." })
     }
 

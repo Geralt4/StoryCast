@@ -29,7 +29,6 @@ nonisolated enum StorageVersionValidator {
     private static var versionMismatchKeywords: [String] {
         [
             "checksum",
-            "migration",
             "schema",
             "version",
             "NSStagedMigrationManager",

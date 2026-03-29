@@ -56,21 +56,23 @@ final class StartupCoordinator: ObservableObject {
         guard !hasScheduledMaintenance else { return }
         hasScheduledMaintenance = true
 
+        let legacyDeduplicationKey = legacyDeduplicationKey
+        let normalizedURLMigrationKey = normalizedURLMigrationKey
         maintenanceTask = Task(priority: .utility) { [weak self] in
             await PlaybackSessionManager.shared.recoverPendingProgressIfNeeded(container: container)
             await LibraryMaintenanceService.repairLibraryIntegrity(container: container)
             await LibraryMaintenanceService.adoptManagedLibraryFiles(container: container)
 
-            if !UserDefaults.standard.bool(forKey: self?.legacyDeduplicationKey ?? "") {
+            if !UserDefaults.standard.bool(forKey: legacyDeduplicationKey) {
                 let result = await LibraryMaintenanceService.deduplicateExistingBooks(container: container)
                 if result.completed {
-                    UserDefaults.standard.set(true, forKey: self?.legacyDeduplicationKey ?? "hasCompletedLegacyLibraryDeduplication")
+                    UserDefaults.standard.set(true, forKey: legacyDeduplicationKey)
                 }
             }
 
-            if !UserDefaults.standard.bool(forKey: self?.normalizedURLMigrationKey ?? "") {
+            if !UserDefaults.standard.bool(forKey: normalizedURLMigrationKey) {
                 await Self.migrateNormalizedURL(container: container)
-                UserDefaults.standard.set(true, forKey: self?.normalizedURLMigrationKey ?? "hasCompletedNormalizedURLMigration")
+                UserDefaults.standard.set(true, forKey: normalizedURLMigrationKey)
             }
 
             await LibraryMaintenanceService.syncRemoteLibraries(container: container)

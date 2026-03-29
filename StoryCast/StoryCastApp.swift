@@ -18,74 +18,80 @@ struct StoryCastApp: App {
             if let recoveryContainer = AppBootstrap.makeRecoveryContainer() {
                 storageBootstrapState = .failed(failure)
                 sharedModelContainer = recoveryContainer
-            } else {
-                let schema = Schema(versionedSchema: SchemaV3.self)
-                let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-                var minimalContainer: ModelContainer?
-                for attempt in 0..<3 {
-                    do {
-                        let container = try ModelContainer(for: schema, configurations: [config])
-                        minimalContainer = container
-                        break
-                    } catch {
-                        AppLogger.app.error("ModelContainer creation attempt \(attempt + 1) failed: \(error.localizedDescription, privacy: .private)")
-                    }
-                    Thread.sleep(forTimeInterval: 0.05)
-                }
-                if let container = minimalContainer {
-                    sharedModelContainer = container
-                } else {
-                    AppLogger.app.critical("Failed to create any ModelContainer after 3 attempts - using SchemaV2 fallback")
-                    do {
-                        let fallback = try ModelContainer(for: schema, configurations: [config])
-                        sharedModelContainer = fallback
-                    } catch {
-                        AppLogger.app.critical("SchemaV2 fallback also failed: \(error.localizedDescription, privacy: .private)")
-                        let emptySchema = Schema()
-                        let emptyConfig = ModelConfiguration(schema: emptySchema, isStoredInMemoryOnly: true)
-                        do {
-                            sharedModelContainer = try ModelContainer(for: emptySchema, configurations: [emptyConfig])
-                        } catch {
-                            AppLogger.app.critical("Empty schema fallback also failed: \(error.localizedDescription, privacy: .private)")
-                            sharedModelContainer = Self.lastResortContainer
-                        }
-                    }
-                }
+            } else if let container = Self.lastResortContainer {
                 storageBootstrapState = .unrecoverable(StorageUnrecoverableError(message: failure.message))
+                sharedModelContainer = container
+            } else {
+                storageBootstrapState = .unrecoverable(StorageUnrecoverableError(message: "Unable to create recovery container"))
+                sharedModelContainer = Self.fatalFallbackContainer
             }
         case .versionMismatch(let error):
-            // Try to create a recovery container for version mismatch
-            if let recoveryContainer = AppBootstrap.makeRecoveryContainer() {
+            // First try to create a persistent container from backup (preserves user data)
+            if let persistentContainer = AppBootstrap.makePersistentRecoveryContainer() {
+                storageBootstrapState = .versionMismatch(error)
+                sharedModelContainer = persistentContainer
+            } else if let recoveryContainer = AppBootstrap.makeRecoveryContainer() {
+                // Fall back to in-memory container if persistent recovery fails
                 storageBootstrapState = .versionMismatch(error)
                 sharedModelContainer = recoveryContainer
-            } else {
-                // Fallback to unrecoverable state
+            } else if let container = Self.lastResortContainer {
                 storageBootstrapState = .unrecoverable(error)
-                sharedModelContainer = Self.lastResortContainer
+                sharedModelContainer = container
+            } else {
+                storageBootstrapState = .unrecoverable(StorageUnrecoverableError(message: "Unable to create recovery container"))
+                sharedModelContainer = Self.fatalFallbackContainer
             }
         case .unrecoverable(let error):
             storageBootstrapState = .unrecoverable(error)
             let schema = Schema(versionedSchema: SchemaV3.self)
             let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-            do {
-                sharedModelContainer = try ModelContainer(for: schema, configurations: [config])
-            } catch {
-                AppLogger.app.critical("ModelContainer creation failed in unrecoverable path: \(error.localizedDescription, privacy: .private)")
-                sharedModelContainer = Self.lastResortContainer
+            if let container = try? ModelContainer(for: schema, configurations: [config]) {
+                sharedModelContainer = container
+            } else if let container = Self.lastResortContainer {
+                sharedModelContainer = container
+            } else {
+                sharedModelContainer = Self.fatalFallbackContainer
             }
         }
     }
 
-    private nonisolated static var lastResortContainer: ModelContainer {
+    private nonisolated static var lastResortContainer: ModelContainer? {
         let schema = Schema()
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        do {
-            return try ModelContainer(for: schema, configurations: [config])
-        } catch {
-            AppLogger.app.critical("lastResortContainer creation failed: \(error.localizedDescription, privacy: .private)")
-            fatalError("Unable to create any ModelContainer - this should never happen")
+        
+        // Strategy 1: Try empty Schema
+        if let container = try? ModelContainer(for: schema, configurations: [config]) {
+            return container
         }
+        
+        // Strategy 2: Retry once (handles transient memory pressure)
+        AppLogger.app.warning("First attempt to create lastResortContainer failed, retrying...")
+        if let container = try? ModelContainer(for: schema, configurations: [config]) {
+            return container
+        }
+        
+        // Strategy 3: Try SchemaV3 (handles case where empty Schema fails but main schema works)
+        let minimalSchema = Schema(versionedSchema: SchemaV3.self)
+        let minimalConfig = ModelConfiguration(schema: minimalSchema, isStoredInMemoryOnly: true)
+        if let container = try? ModelContainer(for: minimalSchema, configurations: [minimalConfig]) {
+            return container
+        }
+        
+        // Strategy 4: Retry SchemaV3 once
+        AppLogger.app.warning("First SchemaV3 attempt failed, retrying...")
+        if let container = try? ModelContainer(for: minimalSchema, configurations: [minimalConfig]) {
+            return container
+        }
+        
+        AppLogger.app.critical("All lastResortContainer attempts failed — this is a catastrophic failure")
+        return nil
     }
+    
+    private static let fatalFallbackContainer: ModelContainer = {
+        let schema = Schema(versionedSchema: SchemaV3.self)
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        return try! ModelContainer(for: schema, configurations: [config])
+    }()
 
     @AppStorage("appearanceMode") private var appearanceModeRaw: String = AppearanceMode.automatic.rawValue
     @Environment(\.scenePhase) private var scenePhase
@@ -117,6 +123,9 @@ struct StoryCastApp: App {
                     if newPhase == .background || newPhase == .inactive {
                         saveCurrentPlaybackPosition()
                     }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .init("StoryCast.SavePlaybackPosition"))) { _ in
+                    saveCurrentPlaybackPosition()
                 }
 
         }

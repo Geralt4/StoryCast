@@ -148,19 +148,12 @@ struct PlayerView: View {
 
 #Preview {
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    if let container = try? ModelContainer(for: Book.self, Chapter.self, Folder.self, configurations: config) {
-        let book = Book(
-title: "Sample Book",
-            localFileName: "sample.mp3",
-            duration: 3600.0
-        )
-        return PlayerView(book: book)
-            .modelContainer(container)
-    }
-let book = Book(
-            title: "Sample Book",
-            localFileName: "sample.mp3",
-            duration: 3600.0
-        )
-        return PlayerView(book: book)
+    let container = try! ModelContainer(for: Book.self, Chapter.self, Folder.self, configurations: config)
+    let book = Book(
+        title: "Sample Book",
+        localFileName: "sample.mp3",
+        duration: 3600.0
+    )
+    return PlayerView(book: book)
+        .modelContainer(container)
 }

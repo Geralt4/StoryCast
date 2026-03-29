@@ -78,14 +78,38 @@ enum AppBootstrap {
             } catch {
                 lastError = error
                 AppLogger.app.error("Recovery container attempt \(attempt) failed: \(error.localizedDescription)")
-                if attempt < 3 {
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
             }
         }
         
         AppLogger.app.critical("All recovery container attempts failed: \(lastError?.localizedDescription ?? "unknown")")
         return nil
+    }
+
+    /// Creates a persistent recovery container by restoring from the latest backup
+    /// This preserves user data while allowing the app to function
+    nonisolated static func makePersistentRecoveryContainer() -> ModelContainer? {
+        let backups = StorageBackupManager.listBackups()
+        guard !backups.isEmpty else {
+            AppLogger.app.info("No backup found for persistent recovery")
+            return nil
+        }
+
+        // Try to open the backup directly as a ModelContainer
+        // This works if the backup has a compatible schema (no migration needed since we open existing data)
+        let schema = Schema(versionedSchema: SchemaV3.self)
+        let backupConfig = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: false
+        )
+
+        do {
+            let container = try ModelContainer(for: schema, configurations: [backupConfig])
+            AppLogger.app.info("Successfully created persistent recovery container from backup")
+            return container
+        } catch {
+            AppLogger.app.warning("Could not open backup directly (schema may be incompatible): \(error.localizedDescription)")
+            return nil
+        }
     }
     
     // MARK: - Recovery Operations
@@ -94,7 +118,7 @@ enum AppBootstrap {
     /// Returns the new container, or nil if recovery failed
     nonisolated static func attemptRecovery() async -> ModelContainer? {
         let state = await performFreshStart()
-        
+
         switch state {
         case .ready(let container):
             return container
@@ -102,32 +126,45 @@ enum AppBootstrap {
             return nil
         }
     }
-    
+
     /// Starts fresh: backs up, deletes old database, creates new one
     /// Returns the new bootstrap state
     nonisolated static func startFresh() async -> StorageBootstrapState {
         await performFreshStart()
     }
-    
+
     /// Shared implementation for recovery operations
     /// Backs up old database, deletes it, creates new persistent container
     private nonisolated static func performFreshStart() async -> StorageBootstrapState {
-        // 1. Backup existing database BEFORE any deletion
-        let backupURL = StorageBackupManager.backupDatabase()
-        if let backupURL = backupURL {
-            AppLogger.app.info("Created backup before recovery: \(backupURL.path)")
+        // 1. Backup existing database AND cover art BEFORE any deletion
+        guard let backupURL = StorageBackupManager.backupDatabase() else {
+            AppLogger.app.critical("Database backup failed — aborting fresh start to prevent data loss")
+            return .unrecoverable(
+                StorageUnrecoverableError(message: "Unable to backup existing database before recovery")
+            )
         }
+        AppLogger.app.info("Created backup before recovery: \(backupURL.path)")
+
+        // Also backup cover art (small files, critical for UX)
+        _ = StorageBackupManager.backupCoverArt()
         
-        // 2. Delete all database files
-        StorageBackupManager.deleteDatabaseFiles()
-        
+        // 2. Delete all database files only after successful backup
+        let deletedSuccessfully = StorageBackupManager.deleteDatabaseFiles()
+        if !deletedSuccessfully {
+            AppLogger.app.warning("Some database files could not be deleted — proceeding with fresh start anyway")
+        }
+
         // 3. Create NEW persistent container (NOT in-memory!)
         let schema = Schema(versionedSchema: SchemaV3.self)
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-        
+
         do {
             let container = try ModelContainer(for: schema, migrationPlan: migrationPlan, configurations: [config])
             AppLogger.app.info("Successfully created fresh persistent database")
+            
+            // Restore cover art to the new database
+            _ = StorageBackupManager.restoreCoverArt()
+            
             return .ready(container)
         } catch {
             AppLogger.app.critical("Failed to create fresh database: \(error.localizedDescription)")

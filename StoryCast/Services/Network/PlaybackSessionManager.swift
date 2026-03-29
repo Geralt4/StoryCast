@@ -32,7 +32,11 @@ final class PlaybackSessionManager: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     nonisolated(unsafe) private var lifecycleObservers: [Any] = []
     private var isTerminating = false
-    private var isSeeking = false
+    private(set) var isSeeking = false
+    private var isSeekingClearTask: Task<Void, Never>?
+    #if canImport(UIKit)
+    private var activeBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    #endif
     
     private init() {
         AudioPlayerService.shared.$currentTime
@@ -72,6 +76,19 @@ final class PlaybackSessionManager: ObservableObject {
         lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
     }
     
+    func markSeeking() {
+        isSeeking = true
+        isSeekingClearTask?.cancel()
+        isSeekingClearTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
+            guard !Task.isCancelled else { return }
+            if self.isSeeking {
+                self.isSeeking = false
+                AppLogger.sync.warning("Cleared stuck isSeeking flag after timeout")
+            }
+        }
+    }
+
     func isCurrentSession(for book: Book) -> Bool {
         guard book.isRemote, let itemId = book.remoteItemId, let serverId = book.serverId else { return false }
         return currentItemId == itemId && currentServer?.id == serverId
@@ -192,12 +209,14 @@ private extension PlaybackSessionManager {
         await closeCurrentSession()
         
         do {
-            _ = try await reconnectSession(server: server, itemId: itemId, resumePosition: currentPosition)
-            AudioPlayerService.shared.seek(to: currentPosition)
+            let stream = try await reconnectSession(server: server, itemId: itemId, resumePosition: currentPosition)
+            AudioPlayerService.shared.loadAuthenticatedAudio(stream: stream, title: AudioPlayerService.shared.currentURL?.lastPathComponent ?? "Unknown", duration: sessionDuration, seekTo: currentPosition)
             AudioPlayerService.shared.play()
             AppLogger.sync.info("Successfully reconnected after network transition")
         } catch {
             AppLogger.sync.error("Failed to reconnect after network transition: \(error.localizedDescription, privacy: .private)")
+            // Notify the user that reconnection failed
+            NotificationCenter.default.post(name: .init("StoryCast.ReconnectionFailed"), object: nil, userInfo: ["error": error])
         }
     }
     
@@ -244,7 +263,7 @@ private extension PlaybackSessionManager {
     }
     
     func performSync(requireUnsyncedProgress: Bool) async {
-        guard !isSyncing, let sessionId = activeSessionId, let server = currentServer else { return }
+        guard !isSyncing, !isSeeking, let sessionId = activeSessionId, let server = currentServer else { return }
         guard let token = await AudiobookshelfAuth.shared.token(for: server.normalizedURL) else { return }
         
         let currentTime = AudioPlayerService.shared.currentTime
@@ -287,7 +306,22 @@ private extension PlaybackSessionManager {
     
     func performBackgroundSyncTask(named taskName: String, operation: @escaping @MainActor () async -> Void) {
         #if canImport(UIKit)
-        let taskID = UIApplication.shared.beginBackgroundTask(withName: taskName, expirationHandler: nil)
+        // End any previous leaked background task
+        if activeBackgroundTaskID != .invalid {
+            UIApplication.shared.endBackgroundTask(activeBackgroundTaskID)
+            activeBackgroundTaskID = .invalid
+        }
+        
+        let taskID = UIApplication.shared.beginBackgroundTask(withName: taskName) { [weak self] in
+            // Expiration handler — must end the task to avoid forced termination
+            AppLogger.sync.warning("Background task \(taskName) expired")
+            if let self, self.activeBackgroundTaskID != .invalid {
+                UIApplication.shared.endBackgroundTask(self.activeBackgroundTaskID)
+                self.activeBackgroundTaskID = .invalid
+            }
+        }
+        activeBackgroundTaskID = taskID
+        
         guard taskID != .invalid else {
             Task { @MainActor in await operation() }
             return
@@ -295,6 +329,9 @@ private extension PlaybackSessionManager {
         Task { @MainActor in
             await operation()
             UIApplication.shared.endBackgroundTask(taskID)
+            if self.activeBackgroundTaskID == taskID {
+                self.activeBackgroundTaskID = .invalid
+            }
         }
         #else
         Task { @MainActor in await operation() }
@@ -311,6 +348,9 @@ private extension PlaybackSessionManager {
         totalTimeListened = 0
         lastObservedTime = 0
         isInBackground = false
+        isSeeking = false
+        isSeekingClearTask?.cancel()
+        isSeekingClearTask = nil
     }
     
     func stopAllTimers() {
@@ -320,9 +360,10 @@ private extension PlaybackSessionManager {
     
     func startSyncTimer() {
         syncTimer?.invalidate()
+        let capturedSessionId = activeSessionId
         syncTimer = Timer.scheduledTimer(withTimeInterval: AudiobookshelfDefaults.progressSyncInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.activeSessionId != nil, !self.isTerminating, !self.isSyncing else { return }
+                guard let self, let capturedSessionId, self.activeSessionId == capturedSessionId, !self.isTerminating, !self.isSyncing else { return }
                 await self.syncProgress()
             }
         }
@@ -330,9 +371,10 @@ private extension PlaybackSessionManager {
     
     func startBackgroundSyncTimer() {
         backgroundSyncTimer?.invalidate()
+        let capturedSessionId = activeSessionId
         backgroundSyncTimer = Timer.scheduledTimer(withTimeInterval: AudiobookshelfDefaults.backgroundProgressSyncInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.activeSessionId != nil, !self.isTerminating, !self.isSyncing else { return }
+                guard let self, let capturedSessionId, self.activeSessionId == capturedSessionId, !self.isTerminating, !self.isSyncing else { return }
                 await self.syncProgress()
             }
         }
@@ -341,3 +383,14 @@ private extension PlaybackSessionManager {
     func stopSyncTimer() { syncTimer?.invalidate(); syncTimer = nil }
     func stopBackgroundSyncTimer() { backgroundSyncTimer?.invalidate(); backgroundSyncTimer = nil }
 }
+
+#if DEBUG
+extension PlaybackSessionManager {
+    var debugTotalTimeListened: Double { totalTimeListened }
+    var debugLastObservedTime: Double { lastObservedTime }
+    var debugIsSeeking: Bool { isSeeking }
+
+    func debugSetLastObservedTime(_ time: Double) { lastObservedTime = time }
+    func debugResetListenedTime() { totalTimeListened = 0 }
+}
+#endif

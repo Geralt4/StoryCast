@@ -68,6 +68,8 @@ class AudioPlayerService: ObservableObject {
         loadAudioAsset(url: url, title: title, duration: duration, seekTo: time)
     }
     
+    private var isLoadingAsset = false
+    
     private func loadAudioAsset(
         url: URL,
         title: String,
@@ -75,6 +77,13 @@ class AudioPlayerService: ObservableObject {
         seekTo time: Double? = nil,
         assetOptions: [String: Any]? = nil
     ) {
+        guard !isLoadingAsset else {
+            AppLogger.playback.warning("Ignoring concurrent loadAudioAsset call")
+            return
+        }
+        isLoadingAsset = true
+        defer { isLoadingAsset = false }
+        
         removeTimeObserver()
         playerItemObserver = nil
         timeControlStatusObserver = nil
@@ -148,7 +157,6 @@ class AudioPlayerService: ObservableObject {
         backgroundManager.isPlaying = false
         remoteCommandHandler.isPlaying = false
         #endif
-        updatePlaybackState()
         updatePlaybackRate()
         AppLogger.playback.info("pause() completed - isPlaying: \(self.isPlaying)")
     }
@@ -158,10 +166,16 @@ class AudioPlayerService: ObservableObject {
     }
     
     func seek(to time: Double) {
-        let cmTime = CMTime(seconds: time, preferredTimescale: preferredTimescale)
+        guard time.isFinite, time >= 0 else {
+            AppLogger.playback.warning("Ignoring seek to invalid time: \(time)")
+            return
+        }
+        PlaybackSessionManager.shared.markSeeking()
+        let clampedTime = min(time, duration > 0 ? duration : time)
+        let cmTime = CMTime(seconds: clampedTime, preferredTimescale: preferredTimescale)
         player?.seek(to: cmTime)
         #if os(iOS)
-        remoteCommandHandler.updateElapsedTime(time)
+        remoteCommandHandler.updateElapsedTime(clampedTime)
         #endif
         playbackDidReachEnd = false
     }
@@ -169,12 +183,13 @@ class AudioPlayerService: ObservableObject {
     // MARK: - Skip Controls
     
     func skipForward(_ seconds: Double? = nil) {
-        guard duration > 0 else { return }
+        guard duration > 0, currentTime.isFinite else { return }
         let skipSeconds = seconds ?? cachedPlaybackSettings.skipForwardSeconds
         seek(to: min(currentTime + skipSeconds, duration))
     }
     
     func skipBackward(_ seconds: Double? = nil) {
+        guard currentTime.isFinite else { return }
         let skipSeconds = seconds ?? cachedPlaybackSettings.skipBackwardSeconds
         seek(to: max(currentTime - skipSeconds, 0))
     }
@@ -335,6 +350,8 @@ extension AudioPlayerService: AudioSessionDelegate {
                 self.player?.pause()
                 self.updatePlaybackState()
                 self.updatePlaybackRate()
+                // Save position to prevent data loss if app terminates during interruption
+                NotificationCenter.default.post(name: .init("StoryCast.SavePlaybackPosition"), object: nil)
                 AppLogger.playback.info("Paused due to audio interruption")
             }
         }
