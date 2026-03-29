@@ -207,7 +207,10 @@ extension DownloadManager: URLSessionDownloadDelegate {
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         guard totalBytesExpectedToWrite > 0 else { return }
         let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
-        Task { @MainActor [weak self] in self?.downloads[self?.taskMap[downloadTask] ?? UUID()]?.progress = progress }
+        Task { @MainActor [weak self] in
+            guard let self, let bookId = taskMap[downloadTask] else { return }
+            downloads[bookId]?.progress = progress
+        }
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

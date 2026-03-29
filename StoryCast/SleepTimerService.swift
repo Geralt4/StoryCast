@@ -178,6 +178,7 @@ class SleepTimerService: ObservableObject {
         timer = Timer(timeInterval: TimerDefaults.tickInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, self.timerGeneration == generation else { return }
+                guard self.audioPlayerService.isPlaying else { return }
                 let currentTime = self.audioPlayerService.currentTime
                 if currentTime >= (self.endOfChapterTime ?? 0) {
                     self.timerFired()

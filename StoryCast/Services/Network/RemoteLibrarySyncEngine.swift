@@ -150,6 +150,7 @@ enum RemoteLibrarySyncEngine {
                 existing.author = item.authorName
                 existing.duration = duration
                 existing.lastSyncDate = Date()
+                existing.updateSearchFields()
                 updateCount += 1
             } else {
                 let book = Book(

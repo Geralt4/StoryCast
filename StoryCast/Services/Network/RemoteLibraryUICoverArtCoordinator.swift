@@ -48,6 +48,7 @@ final class RemoteLibraryUICoverArtCoordinator {
     func enqueue(requests: [RemoteCoverArtRequest], container: ModelContainer) {
         for request in requests {
             let bookId = request.bookId
+            tasks[bookId]?.cancel()
             tasks[bookId] = Task(priority: .utility) {
                 await self.downloadAndSaveCoverArt(request: request, container: container)
                 _ = await MainActor.run {
@@ -150,7 +151,7 @@ final class RemoteLibraryUICoverArtCoordinator {
                     self.tasks[bookId] = Task(priority: .utility) {
                         try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                         await self.downloadAndSaveCoverArt(request: request, container: container)
-                        self.tasks.removeValue(forKey: bookId)
+                        _ = await MainActor.run { self.tasks.removeValue(forKey: bookId) }
                     }
                 }
             }

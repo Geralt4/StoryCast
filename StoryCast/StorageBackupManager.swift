@@ -91,15 +91,30 @@ nonisolated enum StorageBackupManager {
         
         let backupFileName = "StoryCast_backup_\(timestamp).store"
         let backupURL = backupDirectoryURL.appendingPathComponent(backupFileName)
-        
-        do {
-            try FileManager.default.copyItem(at: databaseURL, to: backupURL)
+
+        var anySucceeded = false
+        for sourceFile in databaseFiles {
+            let baseName: String
+            if sourceFile.pathExtension == "store" {
+                baseName = "StoryCast_backup_\(timestamp).store"
+            } else {
+                // WAL/SHM files: preserve the full extension chain (e.g., .store.wal)
+                baseName = "StoryCast_backup_\(timestamp).store.\(sourceFile.pathExtension)"
+            }
+            let destURL = backupDirectoryURL.appendingPathComponent(baseName)
+            do {
+                try FileManager.default.copyItem(at: sourceFile, to: destURL)
+                if sourceFile == databaseURL { anySucceeded = true }
+            } catch {
+                AppLogger.app.error("Failed to backup \(sourceFile.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+
+        if anySucceeded {
             AppLogger.app.info("Database backed up to: \(backupURL.path)")
             return backupURL
-        } catch {
-            AppLogger.app.error("Failed to backup database: \(error.localizedDescription)")
-            return nil
         }
+        return nil
     }
     
     /// Lists all available backups, sorted by date (newest first)
@@ -111,7 +126,10 @@ nonisolated enum StorageBackupManager {
             return []
         }
         
-        let backups = contents.filter { $0.pathExtension == "store" }
+        // Filter to only main store files (exclude .wal, .shm backups)
+        let backups = contents.filter { url in
+            url.pathExtension == "store" && url.lastPathComponent.hasSuffix(".store") && !url.lastPathComponent.contains(".store.")
+        }
         
         return backups.sorted { url1, url2 in
             let date1 = (try? url1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
@@ -154,5 +172,118 @@ nonisolated enum StorageBackupManager {
         
         let date = (try? backupURL.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
         return dateFormatter.string(from: date)
+    }
+    
+    // MARK: - Cover Art Backup
+    
+    /// Backs up cover art to the backup directory
+    /// Cover art is small (~50KB) and critical for UX, so it's worth backing up
+    /// - Returns: Number of cover art files backed up, or nil if operation failed
+    static func backupCoverArt() -> Int? {
+        let coverArtURLs = [
+            documentsBackedDirectoryURL(named: "CoverArt"),
+            applicationSupportBackedDirectoryURL(named: "RemoteCoverArt")
+        ]
+        
+        var backedUpCount = 0
+        
+        for coverArtDir in coverArtURLs {
+            guard FileManager.default.fileExists(atPath: coverArtDir.path) else { continue }
+            
+            do {
+                let files = try FileManager.default.contentsOfDirectory(at: coverArtDir, includingPropertiesForKeys: nil)
+                
+                for file in files where file.pathExtension.lowercased() == "jpg" || file.pathExtension.lowercased() == "jpeg" || file.pathExtension.lowercased() == "png" {
+                    let backupFileName = "coverart_\(file.lastPathComponent)"
+                    let destURL = backupDirectoryURL.appendingPathComponent(backupFileName)
+                    
+                    do {
+                        try FileManager.default.copyItem(at: file, to: destURL)
+                        backedUpCount += 1
+                    } catch {
+                        AppLogger.app.warning("Failed to backup cover art \(file.lastPathComponent): \(error.localizedDescription)")
+                    }
+                }
+            } catch {
+                AppLogger.app.error("Failed to list cover art directory \(coverArtDir.path): \(error.localizedDescription)")
+                return nil
+            }
+        }
+        
+        AppLogger.app.info("Backed up \(backedUpCount) cover art files")
+        return backedUpCount
+    }
+    
+    /// Restores cover art from the backup directory
+    /// - Returns: Number of cover art files restored, or nil if operation failed
+    static func restoreCoverArt() -> Int? {
+        var restoredCount = 0
+        
+        guard let contents = try? FileManager.default.contentsOfDirectory(at: backupDirectoryURL, includingPropertiesForKeys: nil) else {
+            AppLogger.app.info("No backup directory contents to restore cover art from")
+            return nil
+        }
+        
+        let coverArtFiles = contents.filter { $0.lastPathComponent.hasPrefix("coverart_") }
+        
+        for backupFile in coverArtFiles {
+            // Determine the correct destination based on whether it's remote or local cover art
+            let fileName = String(backupFile.lastPathComponent.dropFirst("coverart_".count))
+            let isRemote = fileName.contains("_remote_") || backupFile.lastPathComponent.contains("_remote_")
+            
+            let destDir: URL
+            if isRemote {
+                destDir = applicationSupportBackedDirectoryURL(named: "RemoteCoverArt")
+            } else {
+                destDir = documentsBackedDirectoryURL(named: "CoverArt")
+            }
+            
+            // Create destination directory if needed
+            if !FileManager.default.fileExists(atPath: destDir.path) {
+                try? FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+            }
+            
+            let destURL = destDir.appendingPathComponent(fileName)
+            
+            // Skip if destination already exists (don't overwrite newer files)
+            if FileManager.default.fileExists(atPath: destURL.path) {
+                continue
+            }
+            
+            do {
+                try FileManager.default.copyItem(at: backupFile, to: destURL)
+                restoredCount += 1
+            } catch {
+                AppLogger.app.warning("Failed to restore cover art \(backupFile.lastPathComponent): \(error.localizedDescription)")
+            }
+        }
+        
+        AppLogger.app.info("Restored \(restoredCount) cover art files")
+        return restoredCount
+    }
+    
+    /// Lists all backed up cover art files
+    static func listBackedUpCoverArt() -> [URL] {
+        guard let contents = try? FileManager.default.contentsOfDirectory(at: backupDirectoryURL, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        
+        return contents.filter { $0.lastPathComponent.hasPrefix("coverart_") }
+    }
+    
+    // MARK: - Helper Methods
+    
+    private static func documentsBackedDirectoryURL(named folderName: String) -> URL {
+        guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return FileManager.default.temporaryDirectory.appendingPathComponent(folderName)
+        }
+        return documentsURL.appendingPathComponent(folderName)
+    }
+    
+    private static func applicationSupportBackedDirectoryURL(named folderName: String) -> URL {
+        guard let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return FileManager.default.temporaryDirectory.appendingPathComponent(folderName)
+        }
+        return appSupportURL.appendingPathComponent(folderName)
     }
 }

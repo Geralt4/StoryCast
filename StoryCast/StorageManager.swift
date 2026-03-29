@@ -366,7 +366,8 @@ actor StorageManager {
             do {
                 try fileManager.removeItem(at: sourceURL)
             } catch {
-                AppLogger.storage.warning("Failed to remove source file after copy fallback: \(error.localizedDescription, privacy: .private)")
+                AppLogger.storage.error("Failed to remove source file after copy: \(error.localizedDescription, privacy: .private)")
+                throw error
             }
         }
     }
@@ -378,7 +379,6 @@ actor StorageManager {
             do {
                 try fileManager.removeItem(at: fileURL)
             } catch {
-                guard errorMessage != nil else { continue }
                 AppLogger.storage.error("Storage cleanup failed: \(error.localizedDescription, privacy: .private)")
             }
         }
@@ -459,6 +459,9 @@ actor StorageManager {
                 }
             }
         }
+        
+        // Also delete SwiftData database files to prevent orphaned references
+        StorageBackupManager.deleteDatabaseFiles()
         
         if let bundleId = Bundle.main.bundleIdentifier {
             UserDefaults.standard.removePersistentDomain(forName: bundleId)

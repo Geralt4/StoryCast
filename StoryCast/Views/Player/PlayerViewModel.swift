@@ -362,6 +362,7 @@ final class PlayerViewModel {
     private func updateLastPlayedDate() {
         book.lastPlayedDate = Date()
         do {
+            assertModelContextConfigured()
             try modelContext?.save()
         } catch {
             presentPlaybackSaveError("Couldn't save recently played date.")
@@ -429,6 +430,7 @@ final class PlayerViewModel {
 
                 guard abs(position - lastSavedPosition) > 1.0 else { return }
 
+                assertModelContextConfigured()
                 book.lastPlaybackPosition = position
                 try modelContext?.save()
                 lastSavedPosition = position
@@ -444,6 +446,7 @@ final class PlayerViewModel {
         debouncedSaveTask?.cancel()
         debouncedSaveTask = nil
 
+        assertModelContextConfigured()
         book.lastPlaybackPosition = position
         do {
             try modelContext?.save()
@@ -588,6 +591,7 @@ final class PlayerViewModel {
                 guard abs(currentTime - lastSavedPosition) > 1.0 else { return }
                 
                 // Force save without error UI (silent save for periodic)
+                assertModelContextConfigured()
                 book.lastPlaybackPosition = currentTime
                 do {
                     try modelContext?.save()
@@ -604,7 +608,14 @@ final class PlayerViewModel {
     }
     
     // MARK: - UserDefaults Backup for Local Books
-    
+
+    private func assertModelContextConfigured() {
+        if modelContext == nil {
+            assertionFailure("PlayerViewModel: modelContext is nil — configure(modelContext:) must be called before any save operation")
+            AppLogger.playback.error("PlayerViewModel: modelContext is nil — playback position will not be persisted")
+        }
+    }
+
     private var positionBackupKey: String {
         "localBookPosition_\(book.id.uuidString)"
     }
@@ -624,7 +635,13 @@ final class PlayerViewModel {
     
     private func restorePositionFromUserDefaults() -> Double? {
         guard let dict = UserDefaults.standard.dictionary(forKey: positionBackupKey),
-              let position = dict["currentTime"] as? Double else { return nil }
+              let position = dict["currentTime"] as? Double,
+              let backupTimestamp = dict["timestamp"] as? Double else { return nil }
+        if let lastPlayed = book.lastPlayedDate,
+           lastPlayed.timeIntervalSince1970 > backupTimestamp {
+            clearPositionBackup()
+            return nil
+        }
         return position
     }
 }
