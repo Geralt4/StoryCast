@@ -94,8 +94,6 @@ nonisolated enum StorageVersionValidator {
             AppLogger.app.warning("Storage version mismatch detected: \(parameters)")
         }
         
-        // TODO: Send to analytics service (Firebase, etc.)
-        // Analytics.logEvent("storage_version_mismatch", parameters: parameters)
     }
     
     // MARK: - User Messages
