@@ -57,7 +57,7 @@ final class DownloadManager: NSObject, ObservableObject {
             task.resume()
             AppLogger.sync.info("Download started for book \(bookId, privacy: .private)")
             let timeoutTask = Task {
-                try? await Task.sleep(nanoseconds: 300_000_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(ImportDefaults.downloadTimeout * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 if !resumedContinuations.contains(bookId), timeoutTasks[bookId] != nil {
                     resumeContinuation(for: bookId, result: .failure(APIError.serverUnreachable))

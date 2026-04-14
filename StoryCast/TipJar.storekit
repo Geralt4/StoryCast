@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.in-app-purchases</key>
+	<array>
+		<dict>
+			<key>ProductID</key>
+			<string>tip_small</string>
+			<key>ReferenceName</key>
+			<string>Small Tip</string>
+			<key>Type</key>
+			<string>Consumable</string>
+			<key>Price</key>
+			<real>0.99</real>
+		</dict>
+		<dict>
+			<key>ProductID</key>
+			<string>tip_medium</string>
+			<key>ReferenceName</key>
+			<string>Medium Tip</string>
+			<key>Type</key>
+			<string>Consumable</string>
+			<key>Price</key>
+			<real>2.99</real>
+		</dict>
+		<dict>
+			<key>ProductID</key>
+			<string>tip_large</string>
+			<key>ReferenceName</key>
+			<string>Large Tip</string>
+			<key>Type</key>
+			<string>Consumable</string>
+			<key>Price</key>
+			<real>4.99</real>
+		</dict>
+	</array>
+</dict>
+</plist>

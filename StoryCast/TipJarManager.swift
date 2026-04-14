@@ -24,6 +24,7 @@ enum TipJarManagerError: LocalizedError {
 class TipJarManager: ObservableObject {
     @Published private(set) var products: [Product] = []
     @Published private(set) var isPurchasing = false
+    @Published private(set) var isRestoring = false
     @Published var purchaseSuccess = false
     @Published private(set) var errorMessage: String?
 
@@ -110,6 +111,21 @@ class TipJarManager: ObservableObject {
         case .unverified:
             throw TipJarManagerError.purchaseFailed(NSError(domain: "TipJarManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Transaction verification failed"]))
         }
+    }
+
+    func restorePurchases() async {
+        isRestoring = true
+        errorMessage = nil
+
+        do {
+            try await AppStore.sync()
+            AppLogger.storeKit.info("Restore purchases completed successfully")
+        } catch {
+            AppLogger.storeKit.error("Restore purchases failed: \(error.localizedDescription, privacy: .private)")
+            errorMessage = "Could not restore purchases. Please try again."
+        }
+
+        isRestoring = false
     }
 
     func tipAmount(for product: Product) -> String {

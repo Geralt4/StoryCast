@@ -10,8 +10,29 @@ struct TipJarView: View {
         Form {
             Section {
                 if tipJarManager.products.isEmpty {
-                    Text("Loading tip options...")
-                        .foregroundColor(.secondary)
+                    if tipJarManager.errorMessage != nil {
+                        VStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.largeTitle)
+                                .foregroundColor(.orange)
+                            Text("Could not load tip options")
+                                .font(.headline)
+                            Button("Try Again") {
+                                Task {
+                                    await tipJarManager.loadProducts()
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 20)
+                    } else {
+                        HStack {
+                            ProgressView()
+                            Text("Loading tip options...")
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 } else {
                     ForEach(sortedProducts, id: \.id) { product in
                         TipButton(product: product, tipJarManager: tipJarManager)
@@ -20,12 +41,30 @@ struct TipJarView: View {
             } header: {
                 Text("Choose an amount")
             } footer: {
-                Text("Your support helps keep this app free and improving. Thank you!")
+                VStack(spacing: 8) {
+                    Text("Your support helps keep this app free and improving. Thank you!")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Button {
+                        Task {
+                            await tipJarManager.restorePurchases()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            if tipJarManager.isRestoring {
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                            }
+                            Text("Restore Purchases")
+                        }
+                    }
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .disabled(tipJarManager.isRestoring)
+                }
             }
 
-            if let errorMessage = tipJarManager.errorMessage {
+            if let errorMessage = tipJarManager.errorMessage, tipJarManager.products.isEmpty == false {
                 Section {
                     Text(errorMessage)
                         .foregroundColor(.red)
