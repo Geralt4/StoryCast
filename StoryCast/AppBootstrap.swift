@@ -89,7 +89,7 @@ enum AppBootstrap {
     /// This preserves user data while allowing the app to function
     nonisolated static func makePersistentRecoveryContainer() -> ModelContainer? {
         let backups = StorageBackupManager.listBackups()
-        guard !backups.isEmpty else {
+        guard let latestBackupURL = backups.first else {
             AppLogger.app.info("No backup found for persistent recovery")
             return nil
         }
@@ -97,14 +97,11 @@ enum AppBootstrap {
         // Try to open the backup directly as a ModelContainer
         // This works if the backup has a compatible schema (no migration needed since we open existing data)
         let schema = Schema(versionedSchema: SchemaV3.self)
-        let backupConfig = ModelConfiguration(
-            schema: schema,
-            isStoredInMemoryOnly: false
-        )
+        let backupConfig = ModelConfiguration(schema: schema, url: latestBackupURL)
 
         do {
             let container = try ModelContainer(for: schema, configurations: [backupConfig])
-            AppLogger.app.info("Successfully created persistent recovery container from backup")
+            AppLogger.app.info("Successfully created persistent recovery container from backup at \(latestBackupURL.path, privacy: .private)")
             return container
         } catch {
             AppLogger.app.warning("Could not open backup directly (schema may be incompatible): \(error.localizedDescription)")
@@ -159,7 +156,7 @@ enum AppBootstrap {
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
         do {
-            let container = try ModelContainer(for: schema, migrationPlan: migrationPlan, configurations: [config])
+            let container = try ModelContainer(for: schema, migrationPlan: nil, configurations: [config])
             AppLogger.app.info("Successfully created fresh persistent database")
             
             // Restore cover art to the new database

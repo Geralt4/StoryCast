@@ -4,7 +4,7 @@ import SwiftData
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
 
-    let storageBootstrapState: StorageBootstrapState
+    @State var storageBootstrapState: StorageBootstrapState
 
     @StateObject private var startupCoordinator = StartupCoordinator()
 
@@ -18,10 +18,8 @@ struct ContentView: View {
             case .versionMismatch(let error):
                 StorageVersionMismatchView(
                     error: error,
-                    onRecoveryComplete: { _ in
-                        // Recovery completed - user needs to restart the app
-                        // The storageBootstrapState in the parent still reflects the old state
-                        // User has been shown the restart message
+                    onRecoveryComplete: { newState in
+                        storageBootstrapState = newState
                     }
                 )
             case .unrecoverable(let error):
@@ -60,7 +58,11 @@ struct ContentView: View {
 }
 
 #Preview {
-    let container = AppBootstrap.makeRecoveryContainer()!
+    let container = AppBootstrap.makeRecoveryContainer() ?? {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let schema = Schema([Book.self, Chapter.self, Folder.self, ABSServer.self])
+        return try! ModelContainer(for: schema, configurations: [config])
+    }()
     ContentView(storageBootstrapState: .ready(container))
         .environmentObject(ImportService.shared)
         .modelContainer(for: [Book.self, Chapter.self, Folder.self, ABSServer.self], inMemory: true)

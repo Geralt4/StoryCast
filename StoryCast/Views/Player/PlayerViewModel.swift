@@ -94,12 +94,12 @@ final class PlayerViewModel {
         skipSymbolName(for: skipForwardSeconds, baseName: "goforward")
     }
 
-    var bookAudioURL: URL {
+    var bookAudioURL: URL? {
         if book.isRemote {
             if book.isDownloaded, let cachePath = book.localCachePath {
                 return StorageManager.shared.remoteAudioCacheURL(for: cachePath)
             }
-            return URL(string: "about:blank")!
+            return nil
         }
         return StorageManager.shared.storyCastLibraryURL.appendingPathComponent(book.localFileName)
     }
@@ -149,17 +149,17 @@ final class PlayerViewModel {
                     }
                 }
             } else {
-                // For local books, check if file exists before loading
+                // audioURL is always non-nil for local books
+                guard let localAudioURL = audioURL else { return }
                 Task { @MainActor in
                     let fileExists = await Task.detached(priority: .utility) {
-                        FileManager.default.fileExists(atPath: audioURL.path)
+                        FileManager.default.fileExists(atPath: localAudioURL.path)
                     }.value
-                    guard audioPlayer.currentURL != audioURL else { return }
+                    guard audioPlayer.currentURL != localAudioURL else { return }
                     if fileExists {
-                        // Check for and restore any pending UserDefaults backup
                         let backupPosition = restorePositionFromUserDefaults()
                         let startPosition = backupPosition ?? book.lastPlaybackPosition
-                        audioPlayer.loadAudio(url: audioURL, title: book.title, duration: safeDuration, seekTo: startPosition)
+                        audioPlayer.loadAudio(url: localAudioURL, title: book.title, duration: safeDuration, seekTo: startPosition)
                         
                         // If we restored from backup, also update the book's position
                         if let backupPosition = backupPosition {
@@ -192,9 +192,10 @@ final class PlayerViewModel {
             chapterExtractionTask?.cancel()
             chapterExtractionTask = Task { @MainActor in
                 guard !Task.isCancelled else { return }
+                guard let url = self.bookAudioURL else { return }
                 let extractor = MetadataChapterExtractor()
                 let detectedChapters = await Task.detached(priority: .utility) {
-                    try? await extractor.extractChapters(from: audioURL)
+                    try? await extractor.extractChapters(from: url)
                 }.value
                 guard !Task.isCancelled else { return }
                 if let detectedChapters = detectedChapters, !detectedChapters.isEmpty {
@@ -373,7 +374,8 @@ final class PlayerViewModel {
         if usesRemoteStreaming {
             return sessionManager.isCurrentSession(for: book)
         }
-        return audioPlayer.currentURL == (expectedURL ?? bookAudioURL)
+        guard let url = expectedURL ?? bookAudioURL else { return false }
+        return audioPlayer.currentURL == url
     }
 
     private func fetchServer(for serverId: UUID?) -> ABSServer? {

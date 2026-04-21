@@ -5,7 +5,7 @@ import SwiftData
 /// Tapping a book navigates to the player which streams from the server.
 struct RemoteLibraryView: View {
     @Environment(\.modelContext) private var modelContext
-    @StateObject private var remoteLibrary = RemoteLibraryService.shared
+    @ObservedObject private var remoteLibrary = RemoteLibraryService.shared
 
     let server: ABSServer
     let library: ABSLibrary

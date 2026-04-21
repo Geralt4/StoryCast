@@ -146,15 +146,6 @@ struct StorageVersionMismatchView: View {
             .font(.headline)
             .foregroundStyle(.orange)
             .padding(.top)
-        
-        Button(action: {}) {
-            Text("Close App")
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-        }
-        .buttonStyle(.borderedProminent)
-        .padding(.horizontal, 32)
-        .padding(.top)
     }
     
     @ViewBuilder

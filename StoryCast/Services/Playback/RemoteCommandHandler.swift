@@ -39,6 +39,8 @@ final class RemoteCommandHandler {
         #if os(iOS)
         guard !isConfigured else { return }
         isConfigured = true
+
+        UIApplication.shared.beginReceivingRemoteControlEvents()
         
         let commandCenter = MPRemoteCommandCenter.shared()
         
@@ -95,7 +97,7 @@ final class RemoteCommandHandler {
             MPMediaItemPropertyTitle: title.isEmpty ? "StoryCast" : title,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
-            MPNowPlayingInfoPropertyPlaybackRate: 1.0,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
             MPMediaItemPropertyMediaType: MPMediaType.audioBook.rawValue
         ]
@@ -110,6 +112,7 @@ final class RemoteCommandHandler {
     func updateElapsedTime(_ currentTime: Double) {
         var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
     

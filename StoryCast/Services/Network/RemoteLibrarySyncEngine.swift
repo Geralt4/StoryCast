@@ -44,11 +44,6 @@ enum RemoteLibrarySyncEngine {
 
             return true
         } catch APIError.unauthorized {
-            do {
-                try await AudiobookshelfAuth.shared.deleteToken(for: server.normalizedURL)
-            } catch {
-                AppLogger.network.error("Failed to delete expired token from Keychain: \(error.localizedDescription, privacy: .private)")
-            }
             return false
         }
     }

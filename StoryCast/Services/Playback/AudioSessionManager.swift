@@ -52,9 +52,30 @@ final class AudioSessionManager {
             isAudioSessionActive = true
         } catch {
             AppLogger.playback.error("Failed to activate audio session: \(error.localizedDescription, privacy: .private)")
+            Task { @MainActor in
+                await self.retryActivationWithBackoff()
+            }
         }
         #endif
     }
+
+    #if os(iOS)
+    private func retryActivationWithBackoff() async {
+        let maxAttempts = 2
+        for attempt in 1...maxAttempts {
+            do {
+                try await Task.sleep(nanoseconds: UInt64(attempt) * 100_000_000)
+                try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+                isAudioSessionActive = true
+                AppLogger.playback.info("Audio session reactivated on retry attempt \(attempt)")
+                return
+            } catch {
+                AppLogger.playback.warning("Audio session reactivation attempt \(attempt) failed: \(error.localizedDescription, privacy: .private)")
+            }
+        }
+        AppLogger.playback.error("All audio session reactivation attempts failed")
+    }
+    #endif
     
     #if os(iOS)
     func handleInterruption(type: AVAudioSession.InterruptionType, options: AVAudioSession.InterruptionOptions) {
@@ -62,9 +83,7 @@ final class AudioSessionManager {
         case .began:
             delegate?.audioSessionInterruptionBegan()
         case .ended:
-            if options.contains(.shouldResume) {
-                delegate?.audioSessionInterruptionEnded()
-            }
+            delegate?.audioSessionInterruptionEnded()
         @unknown default:
             break
         }
