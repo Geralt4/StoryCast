@@ -1,6 +1,7 @@
 # OpenCode
 .aider*
 opencode.json
+.kilo/
 
 # Build artifacts
 build/
