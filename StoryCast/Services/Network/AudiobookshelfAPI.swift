@@ -205,7 +205,12 @@ actor AudiobookshelfAPI {
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         switch http.statusCode {
         case 200...299: return
-        case 401: throw APIError.unauthorized
+        case 401:
+            // Handle token cleanup asynchronously
+            if let url = (response as? HTTPURLResponse)?.url?.host {
+                Task { await handleUnauthorized(for: url) }
+            }
+            throw APIError.unauthorized
         default: throw APIError.httpError(statusCode: http.statusCode)
         }
     }

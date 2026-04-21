@@ -4,7 +4,7 @@ import os
 import SwiftData
 
 @MainActor
-final class DownloadManager: NSObject, ObservableObject {
+final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
     static let shared = DownloadManager()
 
     @Published private(set) var downloads: [UUID: DownloadState] = [:]
@@ -25,15 +25,20 @@ final class DownloadManager: NSObject, ObservableObject {
     private var taskMap: [URLSessionDownloadTask: UUID] = [:]
     private var continuations: [UUID: CheckedContinuation<Void, Error>] = [:]
     private var resumedContinuations: Set<UUID> = []
-    private var modelContainer: ModelContainer?
+    private var modelContainers: [UUID: ModelContainer] = [:]
     private var timeoutTasks: [UUID: Task<Void, Never>] = [:]
+    private var backgroundCompletionHandlers: [String: () -> Void] = [:]
 
     private override init() { super.init() }
+
+    func storeBackgroundCompletionHandler(identifier: String, completionHandler: @escaping () -> Void) {
+        backgroundCompletionHandlers[identifier] = completionHandler
+    }
 
     func downloadBook(_ book: Book, server: ABSServer, container: ModelContainer) async throws {
         guard book.isRemote, let itemId = book.remoteItemId else { return }
         guard let token = await AudiobookshelfAuth.shared.token(for: server.normalizedURL) else { throw APIError.tokenMissing }
-        modelContainer = container
+        modelContainers[book.id] = container
 
         let item = try await AudiobookshelfAPI.shared.fetchLibraryItem(baseURL: server.normalizedURL, token: token, itemId: itemId)
         guard let firstTrack = item.media.tracks?.first, let contentUrl = firstTrack.contentUrl else { throw APIError.invalidResponse }
@@ -73,6 +78,7 @@ final class DownloadManager: NSObject, ObservableObject {
         cancelTimeoutTask(for: bookId)
         if let task = taskMap.first(where: { $0.value == bookId })?.key { taskMap.removeValue(forKey: task); task.cancel() }
         downloads.removeValue(forKey: bookId)
+        modelContainers.removeValue(forKey: bookId)
         resumeContinuation(for: bookId, result: .failure(CancellationError()))
     }
 
@@ -91,7 +97,7 @@ final class DownloadManager: NSObject, ObservableObject {
     private func cancelTimeoutTask(for bookId: UUID) { timeoutTasks.removeValue(forKey: bookId)?.cancel() }
 
     private func finishDownload(bookId: UUID, localURL: URL, fileExtension: String, container: ModelContainer) async {
-        defer { cancelTimeoutTask(for: bookId) }
+        defer { cancelTimeoutTask(for: bookId); modelContainers.removeValue(forKey: bookId) }
         let fileName = "\(bookId.uuidString)_remote.\(fileExtension)"
         let fileManager = FileManager.default
         let context = ModelContext(container)
@@ -195,7 +201,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
 
         let fileExtension = downloadTask.taskDescription?.isEmpty == false ? downloadTask.taskDescription! : DownloadManager.extractFileExtension(from: downloadTask.originalRequest?.url?.absoluteString ?? "")
         Task { @MainActor [weak self] in
-            guard let self, let bookId = taskMap[downloadTask], let container = modelContainer else {
+            guard let self, let bookId = taskMap[downloadTask], let container = modelContainers[bookId] else {
                 self?.handleDownloadError(downloadTask: downloadTask, error: APIError.invalidResponse)
                 return
             }
@@ -221,9 +227,21 @@ extension DownloadManager: URLSessionDownloadDelegate {
         }
     }
 
+    nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            for (identifier, completionHandler) in self.backgroundCompletionHandlers {
+                AppLogger.sync.info("All background tasks finished for session \(identifier, privacy: .private) — calling system completion handler")
+                self.backgroundCompletionHandlers.removeValue(forKey: identifier)
+                completionHandler()
+            }
+        }
+    }
+
     private func handleDownloadError(downloadTask: URLSessionDownloadTask, error: Error) {
         guard let bookId = taskMap.removeValue(forKey: downloadTask) else { return }
         cancelTimeoutTask(for: bookId)
+        modelContainers.removeValue(forKey: bookId)
         downloads[bookId]?.status = .failed(error)
         resumeContinuation(for: bookId, result: .failure(error))
         AppLogger.sync.error("Download failed: \(error.localizedDescription, privacy: .private)")
@@ -234,16 +252,18 @@ extension DownloadManager: URLSessionDownloadDelegate {
 extension DownloadManager {
     var debugTimeoutTaskCount: Int { timeoutTasks.count }
     var debugDownloadCount: Int { downloads.count }
+    var debugBackgroundCompletionHandlerCount: Int { backgroundCompletionHandlers.count }
     func debugFinishDownload(bookId: UUID, localURL: URL, fileExtension: String, container: ModelContainer) async {
         await finishDownload(bookId: bookId, localURL: localURL, fileExtension: fileExtension, container: container)
     }
+
     func debugRegisterTrackedDownload(bookId: UUID, timeoutTask: Task<Void, Never>? = nil) {
         downloads[bookId] = DownloadState(bookId: bookId, progress: 0, status: .downloading)
         if let timeoutTask { registerTimeoutTask(timeoutTask, for: bookId) }
     }
     func debugResetState() {
         for timeoutTask in timeoutTasks.values { timeoutTask.cancel() }
-        timeoutTasks.removeAll(); downloads.removeAll(); continuations.removeAll(); resumedContinuations.removeAll(); taskMap.removeAll()
+        timeoutTasks.removeAll(); downloads.removeAll(); continuations.removeAll(); resumedContinuations.removeAll(); taskMap.removeAll(); modelContainers.removeAll(); backgroundCompletionHandlers.removeAll()
     }
     func debugRegisterTimeoutTask(_ task: Task<Void, Never>, for bookId: UUID) { registerTimeoutTask(task, for: bookId) }
     func debugCancelTimeoutTask(for bookId: UUID) { cancelTimeoutTask(for: bookId) }

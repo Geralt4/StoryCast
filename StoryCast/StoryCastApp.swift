@@ -4,6 +4,10 @@ import os
 
 @main
 struct StoryCastApp: App {
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    #endif
+
     let storageBootstrapState: StorageBootstrapState
     let sharedModelContainer: ModelContainer
 
@@ -56,33 +60,20 @@ struct StoryCastApp: App {
     }
 
     private nonisolated static var lastResortContainer: ModelContainer? {
-        let schema = Schema()
+        let schema = Schema(versionedSchema: SchemaV3.self)
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        
-        // Strategy 1: Try empty Schema
+
+        // Strategy 1: Try SchemaV3
         if let container = try? ModelContainer(for: schema, configurations: [config]) {
             return container
         }
-        
+
         // Strategy 2: Retry once (handles transient memory pressure)
         AppLogger.app.warning("First attempt to create lastResortContainer failed, retrying...")
         if let container = try? ModelContainer(for: schema, configurations: [config]) {
             return container
         }
-        
-        // Strategy 3: Try SchemaV3 (handles case where empty Schema fails but main schema works)
-        let minimalSchema = Schema(versionedSchema: SchemaV3.self)
-        let minimalConfig = ModelConfiguration(schema: minimalSchema, isStoredInMemoryOnly: true)
-        if let container = try? ModelContainer(for: minimalSchema, configurations: [minimalConfig]) {
-            return container
-        }
-        
-        // Strategy 4: Retry SchemaV3 once
-        AppLogger.app.warning("First SchemaV3 attempt failed, retrying...")
-        if let container = try? ModelContainer(for: minimalSchema, configurations: [minimalConfig]) {
-            return container
-        }
-        
+
         AppLogger.app.critical("All lastResortContainer attempts failed — this is a catastrophic failure")
         return nil
     }
@@ -90,7 +81,14 @@ struct StoryCastApp: App {
     private static let fatalFallbackContainer: ModelContainer = {
         let schema = Schema(versionedSchema: SchemaV3.self)
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        return try! ModelContainer(for: schema, configurations: [config])
+        do {
+            return try ModelContainer(for: schema, configurations: [config])
+        } catch {
+            AppLogger.app.critical("fatalFallbackContainer creation failed: \(error)")
+            let unrecoverable = StorageUnrecoverableError(message: "Unable to create a minimal in-memory container. Your device may be out of memory.")
+            let state = StorageBootstrapState.unrecoverable(unrecoverable)
+            fatalError("StoryCast could not start: \(unrecoverable.message)")
+        }
     }()
 
     @AppStorage("appearanceMode") private var appearanceModeRaw: String = AppearanceMode.automatic.rawValue

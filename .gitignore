@@ -34,3 +34,6 @@ xcuserdata/
 
 # Local backups
 backup-*/
+
+# Fastlane
+fastlane/.env

@@ -140,10 +140,10 @@ class AudioPlayerService: ObservableObject {
         AppLogger.playback.info("play() called - isPlaying: \(self.isPlaying), hasPlayer: \(self.player != nil)")
         #if os(iOS)
         backgroundManager.isPlaying = true
+        remoteCommandHandler.isPlaying = true
         #endif
         audioSessionManager.ensureActive()
         player?.playImmediately(atRate: playbackRate)
-        updatePlaybackState()
         updatePlaybackRate()
         playbackDidReachEnd = false
         AppLogger.playback.info("play() completed - isPlaying: \(self.isPlaying)")
@@ -173,7 +173,11 @@ class AudioPlayerService: ObservableObject {
         PlaybackSessionManager.shared.markSeeking()
         let clampedTime = min(time, duration > 0 ? duration : time)
         let cmTime = CMTime(seconds: clampedTime, preferredTimescale: preferredTimescale)
-        player?.seek(to: cmTime)
+        player?.seek(to: cmTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.currentTime = clampedTime
+            }
+        }
         #if os(iOS)
         remoteCommandHandler.updateElapsedTime(clampedTime)
         #endif
@@ -360,14 +364,27 @@ extension AudioPlayerService: AudioSessionDelegate {
     nonisolated func audioSessionInterruptionEnded() {
         Task { @MainActor in
             if self.wasPlayingBeforeInterruption {
-                do {
-                    try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-                    self.play()
-                } catch {
-                    AppLogger.playback.error("Failed to reactivate audio session: \(error.localizedDescription, privacy: .private)")
+                await self.attemptPlaybackResumptionWithRetry()
+            }
+        }
+    }
+
+    @MainActor
+    private func attemptPlaybackResumptionWithRetry() async {
+        let maxAttempts = 2
+        for attempt in 1...maxAttempts {
+            do {
+                try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+                self.play()
+                return
+            } catch {
+                AppLogger.playback.warning("Playback resumption attempt \(attempt) failed: \(error.localizedDescription, privacy: .private)")
+                if attempt < maxAttempts {
+                    try? await Task.sleep(nanoseconds: UInt64(attempt) * 100_000_000)
                 }
             }
         }
+        AppLogger.playback.error("All playback resumption attempts failed — user may need to manually resume")
     }
     
     nonisolated func audioSessionRouteChanged(reason: AVAudioSession.RouteChangeReason) {
