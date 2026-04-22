@@ -23,11 +23,16 @@ A privacy-focused iOS audiobook player with Audiobookshelf integration.
 
 StoryCast respects your privacy. The app operates entirely on your device with no data collection or transmission to our servers.
 
-When connecting to your own Audiobookshelf server, that connection is entirely under your control. See our [Privacy Policy](https://geralt4.github.io/StoryCast/) for details.
+When connecting to your own Audiobookshelf server, that connection is entirely under your control. See our [Privacy Policy](https://geralt4.github.io/StoryCast/privacy.html) for details.
 
 ## Requirements
 
 - iOS 17.0 or later
+
+## Links
+
+- [Support & FAQ](https://geralt4.github.io/StoryCast/support.html)
+- [Privacy Policy](https://geralt4.github.io/StoryCast/privacy.html)
 
 ## License
 
