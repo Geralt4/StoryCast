@@ -103,7 +103,10 @@ final class RemoteCommandHandler {
         ]
         
         if let artwork = artwork {
-            nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { @Sendable [artwork] _ in artwork }
+            // Using init(image:) intentionally — init(boundsSize:requestHandler:) crashes on
+            // iPadOS 26+ because MPNowPlayingInfoCenter processes artwork on a background queue
+            // where UIImage (MainActor-isolated) cannot be safely accessed.
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(image: artwork)
         }
         
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
