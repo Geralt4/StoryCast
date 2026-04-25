@@ -45,22 +45,6 @@ struct TipJarView: View {
                     Text("Your support helps keep this app free and improving. Thank you!")
                         .font(.caption)
                         .foregroundColor(.secondary)
-
-                    Button {
-                        Task {
-                            await tipJarManager.restorePurchases()
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            if tipJarManager.isRestoring {
-                                ProgressView()
-                                    .scaleEffect(0.7)
-                            }
-                            Text("Restore Purchases")
-                        }
-                    }
-                    .font(.caption)
-                    .disabled(tipJarManager.isRestoring)
                 }
             }
 
