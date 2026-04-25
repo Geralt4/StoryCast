@@ -139,4 +139,6 @@ enum AccessibilityNotifications {
 enum AppConstants {
     static let appName = "StoryCast"
     static let supportEmail = "johnmanologlou@gmail.com"
+    static let privacyPolicyURL = "https://geralt4.github.io/StoryCast/privacy.html"
+    static let supportURL = "https://geralt4.github.io/StoryCast/support.html"
 }
