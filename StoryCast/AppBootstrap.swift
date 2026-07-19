@@ -27,16 +27,19 @@ enum AppBootstrap {
     nonisolated static func makeStorageBootstrapState(
         containerFactory: ContainerFactory = defaultContainerFactory
     ) -> StorageBootstrapState {
-        let schema = Schema(versionedSchema: SchemaV3.self)
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let schema = Schema(versionedSchema: SchemaV4.self)
+        let config = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: false,
+            cloudKitDatabase: .none
+        )
 
         do {
             let container = try containerFactory(schema, migrationPlan, [config])
             return .ready(container)
         } catch {
-            // Check for version mismatch before treating as generic failure
             let categorizedError = StorageVersionValidator.categorize(error)
-            
+
             if case .versionMismatchDetected = categorizedError {
                 // Log analytics event
                 StorageVersionValidator.logVersionMismatchEvent(
@@ -45,7 +48,7 @@ enum AppBootstrap {
                 )
                 return .versionMismatch(categorizedError)
             }
-            
+
             // For migration or unknown errors, proceed with generic failure
             AppLogger.app.critical("Failed to open persistent model container: \(error.localizedDescription)")
             return .failed(
@@ -67,20 +70,26 @@ enum AppBootstrap {
     }
 
     nonisolated static func makeRecoveryContainer() -> ModelContainer? {
-        let schema = Schema(versionedSchema: SchemaV3.self)
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        let schema = Schema(versionedSchema: SchemaV4.self)
 
         var lastError: Error?
         for attempt in 1...3 {
             do {
-                // Recovery containers don't need migration - they start fresh in memory
-                return try ModelContainer(for: schema, configurations: [config])
+                // Recovery containers don't need migration - they start fresh in memory.
+                // Use a dedicated in-memory config so we never touch the persistent store
+                // in a recovery path, regardless of the sync toggle.
+                let inMemoryConfig = ModelConfiguration(
+                    schema: schema,
+                    isStoredInMemoryOnly: true,
+                    cloudKitDatabase: .none
+                )
+                return try ModelContainer(for: schema, configurations: [inMemoryConfig])
             } catch {
                 lastError = error
                 AppLogger.app.error("Recovery container attempt \(attempt) failed: \(error.localizedDescription)")
             }
         }
-        
+
         AppLogger.app.critical("All recovery container attempts failed: \(lastError?.localizedDescription ?? "unknown")")
         return nil
     }
@@ -96,8 +105,14 @@ enum AppBootstrap {
 
         // Try to open the backup directly as a ModelContainer
         // This works if the backup has a compatible schema (no migration needed since we open existing data)
-        let schema = Schema(versionedSchema: SchemaV3.self)
-        let backupConfig = ModelConfiguration(schema: schema, url: latestBackupURL)
+        let schema = Schema(versionedSchema: SchemaV4.self)
+        // Backups are always opened as local-only; promoting them into CloudKit during
+        // recovery is a separate flow that would require user confirmation.
+        let backupConfig = ModelConfiguration(
+            schema: schema,
+            url: latestBackupURL,
+            cloudKitDatabase: .none
+        )
 
         do {
             let container = try ModelContainer(for: schema, configurations: [backupConfig])
@@ -108,9 +123,9 @@ enum AppBootstrap {
             return nil
         }
     }
-    
+
     // MARK: - Recovery Operations
-    
+
     /// Attempts recovery by backing up and recreating the database
     /// Returns the new container, or nil if recovery failed
     nonisolated static func attemptRecovery() async -> ModelContainer? {
@@ -144,7 +159,7 @@ enum AppBootstrap {
 
         // Also backup cover art (small files, critical for UX)
         _ = StorageBackupManager.backupCoverArt()
-        
+
         // 2. Delete all database files only after successful backup
         let deletedSuccessfully = StorageBackupManager.deleteDatabaseFiles()
         if !deletedSuccessfully {
@@ -152,16 +167,20 @@ enum AppBootstrap {
         }
 
         // 3. Create NEW persistent container (NOT in-memory!)
-        let schema = Schema(versionedSchema: SchemaV3.self)
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let schema = Schema(versionedSchema: SchemaV4.self)
+        let config = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: false,
+            cloudKitDatabase: .none
+        )
 
         do {
-            let container = try ModelContainer(for: schema, migrationPlan: nil, configurations: [config])
+            let container = try ModelContainer(for: schema, migrationPlan: migrationPlan, configurations: [config])
             AppLogger.app.info("Successfully created fresh persistent database")
-            
+
             // Restore cover art to the new database
             _ = StorageBackupManager.restoreCoverArt()
-            
+
             return .ready(container)
         } catch {
             AppLogger.app.critical("Failed to create fresh database: \(error.localizedDescription)")
@@ -170,4 +189,5 @@ enum AppBootstrap {
             )
         }
     }
+
 }

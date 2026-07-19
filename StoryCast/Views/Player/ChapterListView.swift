@@ -92,7 +92,7 @@ struct ChapterListView: View {
 }
 
 #Preview {
-    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
     if let container = try? ModelContainer(for: Book.self, Chapter.self, Folder.self, configurations: config) {
         let book = Book(title: "Sample", localFileName: "sample.mp3", duration: 120)
         let chapters = [

@@ -61,10 +61,10 @@ actor ImportCloudHandler {
         progressHandler: (@Sendable (Double) -> Void)?
     ) async throws -> Bool {
         let startTime = Date()
-        let timeout: TimeInterval = 300
-        
+        let timeout = ImportDefaults.downloadTimeout
+
         while Date().timeIntervalSince(startTime) < timeout {
-            try await Task.sleep(nanoseconds: 500_000_000)
+            try await Task.sleep(nanoseconds: TimerDefaults.progressPollingNanoseconds)
             
             let resourceValues = try await loadCloudResourceValues(for: url)
             
@@ -104,13 +104,14 @@ actor ImportCloudHandler {
     
     /// Loads cloud-specific resource values for a file.
     private func loadCloudResourceValues(for url: URL) async throws -> (isCurrent: Bool, percentDownloaded: Double?) {
-        try await Task.detached(priority: .utility) {
+        let percentKey = URLResourceKey("NSURLUbiquitousItemPercentDownloadedKey")
+        return try await Task.detached(priority: .utility) {
             let resourceValues = try url.resourceValues(
-                forKeys: [.ubiquitousItemDownloadingStatusKey, URLResourceKey("ubiquitousItemPercentDownloadedKey")]
+                forKeys: [.ubiquitousItemDownloadingStatusKey, percentKey]
             )
             let status = resourceValues.ubiquitousItemDownloadingStatus
             let isCurrent = status == nil || status == .current
-            let percentDownloaded = (resourceValues.allValues[URLResourceKey("ubiquitousItemPercentDownloadedKey")] as? NSNumber)?.doubleValue
+            let percentDownloaded = (resourceValues.allValues[percentKey] as? NSNumber)?.doubleValue
             return (isCurrent, percentDownloaded)
         }.value
     }

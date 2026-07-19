@@ -151,7 +151,7 @@ nonisolated final class StoryCastServiceTests: XCTestCase {
     @MainActor
     func testImportServiceImportsAudioFile() async throws {
         let fileURL = try makeTemporaryAudioFile()
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, configurations: config)
         let service = ImportService.shared
 

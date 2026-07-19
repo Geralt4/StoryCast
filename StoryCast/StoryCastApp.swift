@@ -47,8 +47,12 @@ struct StoryCastApp: App {
             }
         case .unrecoverable(let error):
             storageBootstrapState = .unrecoverable(error)
-            let schema = Schema(versionedSchema: SchemaV3.self)
-            let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            let schema = Schema(versionedSchema: SchemaV4.self)
+            let config = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: true,
+                cloudKitDatabase: .none
+            )
             if let container = try? ModelContainer(for: schema, configurations: [config]) {
                 sharedModelContainer = container
             } else if let container = Self.lastResortContainer {
@@ -60,10 +64,14 @@ struct StoryCastApp: App {
     }
 
     private nonisolated static var lastResortContainer: ModelContainer? {
-        let schema = Schema(versionedSchema: SchemaV3.self)
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        let schema = Schema(versionedSchema: SchemaV4.self)
+        let config = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: true,
+            cloudKitDatabase: .none
+        )
 
-        // Strategy 1: Try SchemaV3
+        // Strategy 1: Try SchemaV4
         if let container = try? ModelContainer(for: schema, configurations: [config]) {
             return container
         }
@@ -79,8 +87,12 @@ struct StoryCastApp: App {
     }
     
     private static let fatalFallbackContainer: ModelContainer = {
-        let schema = Schema(versionedSchema: SchemaV3.self)
-        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        let schema = Schema(versionedSchema: SchemaV4.self)
+        let config = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: true,
+            cloudKitDatabase: .none
+        )
         do {
             return try ModelContainer(for: schema, configurations: [config])
         } catch {
@@ -112,6 +124,10 @@ struct StoryCastApp: App {
                     Task {
                         do {
                             try await ImportService.shared.importFile(url: url, container: sharedModelContainer)
+                            await SyncController.shared.synchronizeIfEnabled(
+                                container: sharedModelContainer,
+                                auditLibrary: true
+                            )
                         } catch {
                             AppLogger.app.error("Failed to import file from URL: \(error.localizedDescription, privacy: .private)")
                         }
@@ -120,6 +136,10 @@ struct StoryCastApp: App {
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .background || newPhase == .inactive {
                         saveCurrentPlaybackPosition()
+                    } else if newPhase == .active {
+                        Task {
+                            await SyncController.shared.synchronizeIfEnabled(container: sharedModelContainer)
+                        }
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .init("StoryCast.SavePlaybackPosition"))) { _ in
@@ -147,6 +167,10 @@ struct StoryCastApp: App {
         do {
             if let remoteItemId = PlaybackSessionManager.shared.activeRemoteItemId {
                 let activeServerID = PlaybackSessionManager.shared.activeRemoteServerID
+                // O(n) fetch-and-filter is acceptable here because this runs
+                // infrequently (on background/inactive scene phase) and the
+                // predicate would need to compare optional properties which
+                // SwiftData's #Predicate has limited support for.
                 let books = try context.fetch(FetchDescriptor<Book>())
                 if let book = books.first(where: { book in
                     book.remoteItemId == remoteItemId && (activeServerID == nil || book.serverId == activeServerID)
@@ -167,6 +191,15 @@ struct StoryCastApp: App {
             guard let book = try context.fetch(descriptor).first else { return }
             book.lastPlaybackPosition = currentTime
             try context.save()
+
+            Task {
+                await SyncController.shared.recordProgress(
+                    bookID: book.id,
+                    position: currentTime,
+                    actionKind: "background",
+                    container: sharedModelContainer
+                )
+            }
             
             // Clear any existing UserDefaults backup after successful save
             let backupKey = "localBookPosition_\(book.id.uuidString)"
@@ -178,7 +211,6 @@ struct StoryCastApp: App {
                 // Remote books use ProgressBackupStore, skip here
                 return
             }
-            
             // For local books, backup to UserDefaults
             let fileName = currentURL.lastPathComponent
             let isRemoteCache = currentURL.deletingLastPathComponent() == StorageManager.shared.remoteAudioCacheDirectoryURL

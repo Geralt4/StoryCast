@@ -2,11 +2,16 @@ import SwiftUI
 import SwiftData
 
 struct SettingsView: View {
+    @Environment(\.modelContext) private var modelContext
+
     // Load saved settings
     @State private var playbackSettings = PlaybackSettings.load()
     @State private var sleepTimerSettings = SleepTimerSettings.load()
     @AppStorage("appearanceMode") private var appearanceModeRaw: String = AppearanceMode.automatic.rawValue
-    
+    @AppStorage(CloudSyncDefaults.iCloudSyncEnabledKey) private var iCloudSyncEnabled = false
+    @ObservedObject private var syncController = SyncController.shared
+    @State private var isChangingSyncMode = false
+
     // Server configuration
     @Query(sort: \ABSServer.createdAt) private var servers: [ABSServer]
 
@@ -85,6 +90,47 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
+                Section {
+                    Toggle("Sync Imported Library", isOn: $iCloudSyncEnabled)
+                        .disabled(isChangingSyncMode || syncIsBusy)
+                        .onChange(of: iCloudSyncEnabled) { _, enabled in
+                            Task {
+                                isChangingSyncMode = true
+                                await syncController.setEnabled(enabled, container: modelContext.container)
+                                isChangingSyncMode = false
+                            }
+                        }
+
+                    HStack(spacing: LayoutDefaults.mediumSpacing) {
+                        if syncIsBusy {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: syncStatusSymbol)
+                                .foregroundStyle(syncStatusColor)
+                        }
+                        VStack(alignment: .leading, spacing: LayoutDefaults.tinySpacing) {
+                            Text(syncStatusTitle)
+                            if let detail = syncStatusDetail {
+                                Text(detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    if iCloudSyncEnabled, syncCanRetry {
+                        Button("Retry Sync") {
+                            Task { await syncController.retry(container: modelContext.container) }
+                        }
+                        .disabled(syncIsBusy)
+                    }
+                } header: {
+                    Text("iCloud")
+                } footer: {
+                    Text("When enabled, StoryCast uploads locally imported audiobook files, cover art, folders, chapters, and playback progress to your private iCloud database. Audiobookshelf libraries and credentials are never included. Turning this off pauses sync without deleting iCloud data.")
+                }
+
                 Section(header: Text("Audiobookshelf")) {
                     NavigationLink(destination: ServerListView()) {
                         HStack {
@@ -153,14 +199,6 @@ struct SettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
-
-                    NavigationLink(destination: TipJarView()) {
-                        HStack {
-                            Image(systemName: "heart.fill")
-                                .foregroundColor(.red)
-                            Text("Support Developer")
-                        }
-                    }
                 }
             }
             .navigationTitle("Settings")
@@ -169,6 +207,60 @@ struct SettingsView: View {
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
+    }
+
+    private var syncIsBusy: Bool {
+        switch syncController.status.activity {
+        case .preparing, .syncing: true
+        default: false
+        }
+    }
+
+    private var syncCanRetry: Bool {
+        switch syncController.status.activity {
+        case .failed, .waiting: true
+        default: false
+        }
+    }
+
+    private var syncStatusTitle: String {
+        switch syncController.status.activity {
+        case .disabled: "Off"
+        case .preparing: "Preparing your library"
+        case .syncing: "Syncing"
+        case .waiting: "Needs attention"
+        case .idle: "Up to date"
+        case .failed: "Sync failed"
+        }
+    }
+
+    private var syncStatusDetail: String? {
+        switch syncController.status.activity {
+        case .waiting(let reason): reason
+        case .failed(let message): message
+        case .idle:
+            syncController.status.lastSuccessfulSyncAt.map {
+                "Last synced \($0.formatted(date: .abbreviated, time: .shortened))"
+            }
+        default: nil
+        }
+    }
+
+    private var syncStatusSymbol: String {
+        switch syncController.status.activity {
+        case .disabled: "icloud.slash"
+        case .idle: "checkmark.icloud"
+        case .failed, .waiting: "exclamationmark.icloud"
+        case .preparing, .syncing: "icloud"
+        }
+    }
+
+    private var syncStatusColor: Color {
+        switch syncController.status.activity {
+        case .idle: .green
+        case .failed, .waiting: .orange
+        default: .secondary
+        }
     }
 
     private var buildNumber: String {

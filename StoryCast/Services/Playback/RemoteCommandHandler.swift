@@ -103,12 +103,14 @@ final class RemoteCommandHandler {
         ]
         
         if let artwork = artwork {
-            // Using init(image:) intentionally — init(boundsSize:requestHandler:) crashes on
+            // Uses init(image:) intentionally — init(boundsSize:requestHandler:) crashes on
             // iPadOS 26+ because MPNowPlayingInfoCenter processes artwork on a background queue
-            // where UIImage (MainActor-isolated) cannot be safely accessed.
-            nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(image: artwork)
+            // where the image cannot be safely accessed (reproduced even with a correct
+            // @Sendable closure — see commit 9fb39a1). Routed through the MPArtworkCompat ObjC
+            // shim, which suppresses the deprecation warning that Swift cannot silence per-call.
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = MPArtworkCompat.artwork(with: artwork)
         }
-        
+
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }
     

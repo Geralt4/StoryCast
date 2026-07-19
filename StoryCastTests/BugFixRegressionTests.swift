@@ -48,7 +48,7 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
 
     @MainActor
     func testResolveUnfiledFolderCreatesAndReusesSingleSystemFolder() throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: Folder.self, configurations: config)
         let context = ModelContext(container)
 
@@ -64,18 +64,32 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     }
 
     @MainActor
-    func testSchemaVersionIsV3() {
+    func testHistoricalSchemaV3RetainsAudiobookshelfModel() {
         let models = SchemaV3.models
         XCTAssertTrue(models.contains(where: { $0 == ABSServer.self }), "ABSServer should be in SchemaV3 models")
     }
-    
+
     @MainActor
-    func testMigrationPlanSupportsV1V2V3() {
+    func testMigrationPlanSupportsV1ThroughV4() {
         let schemas = StoryCastMigrationPlan.schemas
-        XCTAssertEqual(schemas.count, 3, "Migration plan should support V1, V2, and V3")
+        XCTAssertEqual(schemas.count, 4, "Migration plan should support V1 through V4")
         XCTAssertTrue(schemas.contains { $0 == SchemaV1.self })
         XCTAssertTrue(schemas.contains { $0 == SchemaV2.self })
         XCTAssertTrue(schemas.contains { $0 == SchemaV3.self })
+        XCTAssertTrue(schemas.contains { $0 == SchemaV4.self })
+    }
+
+    @MainActor
+    func testSchemaV4AddsOnlyLocalSyncSidecars() {
+        let models = SchemaV4.models
+        XCTAssertTrue(models.contains(where: { $0 == SyncRuntime.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncEntityState.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncAsset.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncOutboxOperation.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncInboxRecord.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncProgressHead.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncTombstone.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncMigrationJournal.self }))
     }
     
     @MainActor
@@ -216,7 +230,7 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
 
     @MainActor
     func testFolderSortOrderIncrementsCorrectly() throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
         
@@ -246,7 +260,7 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
 
     @MainActor
     func testCreateFolderWithEmptyNameUsesDefaultName() throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
         
@@ -263,7 +277,7 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
 
     @MainActor
     func testFolderOperationsPersistCorrectly() throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
         
