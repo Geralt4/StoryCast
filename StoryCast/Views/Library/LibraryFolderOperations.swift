@@ -45,6 +45,7 @@ final class LibraryFolderOperations {
         
         do {
             try modelContext.save()
+            scheduleLibrarySync()
         } catch {
             AppLogger.storage.error("Failed to save new folder '\(folderName)': \(error.localizedDescription)")
         }
@@ -66,6 +67,7 @@ final class LibraryFolderOperations {
             folder.name = uniqueName
             do {
                 try modelContext.save()
+                scheduleLibrarySync()
             } catch {
                 AppLogger.storage.error("Failed to save folder rename: \(error.localizedDescription)")
             }
@@ -86,6 +88,7 @@ final class LibraryFolderOperations {
     ///   - folder: The folder to delete
     ///   - destination: The folder to receive the books
     func deleteFolderWithDestination(_ folder: Folder, destination: Folder) {
+        let deletedFolderID = folder.id
         for book in folder.books {
             book.folder = destination
         }
@@ -93,6 +96,7 @@ final class LibraryFolderOperations {
         modelContext.delete(folder)
         do {
             try modelContext.save()
+            scheduleFolderDeletions([deletedFolderID])
         } catch {
             AppLogger.storage.error("Failed to save folder deletion: \(error.localizedDescription)")
         }
@@ -104,6 +108,7 @@ final class LibraryFolderOperations {
     ///   - sourceFolder: The folder to merge from
     ///   - targetFolder: The folder to merge into
     func mergeFolder(_ sourceFolder: Folder, into targetFolder: Folder) {
+        let deletedFolderID = sourceFolder.id
         for book in sourceFolder.books {
             book.folder = targetFolder
         }
@@ -111,6 +116,7 @@ final class LibraryFolderOperations {
         modelContext.delete(sourceFolder)
         do {
             try modelContext.save()
+            scheduleFolderDeletions([deletedFolderID])
         } catch {
             AppLogger.storage.error("Failed to save folder merge: \(error.localizedDescription)")
         }
@@ -122,17 +128,20 @@ final class LibraryFolderOperations {
     ///   - folderIds: IDs of folders to move
     ///   - targetFolder: The destination folder
     func moveFolders(_ folderIds: Set<UUID>, into targetFolder: Folder) {
+        var deletedFolderIDs: [UUID] = []
         for folderId in folderIds {
             if let folder = getUserFolders().first(where: { $0.id == folderId }) {
                 for book in folder.books {
                     book.folder = targetFolder
                 }
                 modelContext.delete(folder)
+                deletedFolderIDs.append(folderId)
             }
         }
         
         do {
             try modelContext.save()
+            scheduleFolderDeletions(deletedFolderIDs)
         } catch {
             AppLogger.storage.error("Failed to save folder move operation: \(error.localizedDescription)")
         }
@@ -143,6 +152,7 @@ final class LibraryFolderOperations {
     /// - Parameter folderIds: IDs of folders to delete
     func deleteFolders(_ folderIds: Set<UUID>) {
         guard let unfiled = getUnfiledFolder() else { return }
+        var deletedFolderIDs: [UUID] = []
         
         for folderId in folderIds {
             if let folder = getUserFolders().first(where: { $0.id == folderId }) {
@@ -150,11 +160,13 @@ final class LibraryFolderOperations {
                     book.folder = unfiled
                 }
                 modelContext.delete(folder)
+                deletedFolderIDs.append(folderId)
             }
         }
         
         do {
             try modelContext.save()
+            scheduleFolderDeletions(deletedFolderIDs)
         } catch {
             AppLogger.storage.error("Failed to save bulk folder deletion: \(error.localizedDescription)")
         }
@@ -196,5 +208,32 @@ final class LibraryFolderOperations {
         } while existingNames.contains(candidateName)
         
         return candidateName
+    }
+
+    private func scheduleLibrarySync() {
+        let container = modelContext.container
+        Task {
+            await SyncController.shared.synchronizeIfEnabled(
+                container: container,
+                auditLibrary: false
+            )
+        }
+    }
+
+    private func scheduleFolderDeletions(_ folderIDs: [UUID]) {
+        let container = modelContext.container
+        Task {
+            for folderID in folderIDs {
+                await SyncController.shared.recordDeletion(
+                    entityKind: .folder,
+                    entityID: folderID.uuidString,
+                    container: container
+                )
+            }
+            await SyncController.shared.synchronizeIfEnabled(
+                container: container,
+                auditLibrary: false
+            )
+        }
     }
 }

@@ -51,6 +51,11 @@ final class LibraryImportHandler {
             )
             
             guard !Task.isCancelled else { return }
+
+            await SyncController.shared.synchronizeIfEnabled(
+                container: modelContext.container,
+                auditLibrary: true
+            )
             
             presentImportResult(importService: importService)
         }
@@ -98,6 +103,10 @@ final class LibraryImportHandler {
         
         retryTask = Task {
             await importService.retryImport(failedImport, container: modelContext.container)
+            await SyncController.shared.synchronizeIfEnabled(
+                container: modelContext.container,
+                auditLibrary: true
+            )
         }
     }
     
@@ -111,6 +120,10 @@ final class LibraryImportHandler {
         
         retryTask = Task {
             await importService.retryAllFailed(container: modelContext.container)
+            await SyncController.shared.synchronizeIfEnabled(
+                container: modelContext.container,
+                auditLibrary: true
+            )
         }
     }
     

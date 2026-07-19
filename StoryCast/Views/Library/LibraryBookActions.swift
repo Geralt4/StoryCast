@@ -20,23 +20,45 @@ final class LibraryBookActions {
     func moveBook(_ book: Book, to folder: Folder) throws {
         book.folder = folder
         try modelContext.save()
+        Task {
+            await SyncController.shared.synchronizeIfEnabled(
+                container: modelContext.container,
+                auditLibrary: false
+            )
+        }
     }
 
     func deleteBook(_ book: Book, saveChanges: Bool = true) async throws {
+        let deletedLocalBookID = book.isRemote ? nil : book.id
         await deleteBookFiles(for: book)
         modelContext.delete(book)
 
         if saveChanges {
             try modelContext.save()
+            if let deletedLocalBookID {
+                await SyncController.shared.recordDeletion(
+                    entityKind: .book,
+                    entityID: deletedLocalBookID.uuidString,
+                    container: modelContext.container
+                )
+            }
         }
     }
 
     func deleteBooks(_ books: [Book]) async throws {
+        let deletedLocalBookIDs = books.filter { !$0.isRemote }.map(\.id)
         for book in books {
             try await deleteBook(book, saveChanges: false)
         }
 
         try modelContext.save()
+        for bookID in deletedLocalBookIDs {
+            await SyncController.shared.recordDeletion(
+                entityKind: .book,
+                entityID: bookID.uuidString,
+                container: modelContext.container
+            )
+        }
     }
 
     func downloadBook(_ book: Book) {

@@ -32,11 +32,17 @@ struct BookRowView: View, Equatable {
     }
     
     static func == (lhs: BookRowView, rhs: BookRowView) -> Bool {
-        // Compare by book ID and selection state - closures are not compared
+        // Compare by book ID, selection state, download state, and playback
+        // progress — closures are not compared. Including isDownloaded and
+        // lastPlaybackPosition ensures the row re-renders when the download
+        // icon or progress bar changes (which would otherwise be swallowed
+        // by .equatable()).
         let sameBook = lhs.book.id == rhs.book.id
         let sameEditing = lhs.isEditing == rhs.isEditing
         let sameSelected = lhs.isSelected == rhs.isSelected
-        return sameBook && sameEditing && sameSelected
+        let sameDownloaded = lhs.book.isDownloaded == rhs.book.isDownloaded
+        let sameProgress = lhs.book.lastPlaybackPosition == rhs.book.lastPlaybackPosition
+        return sameBook && sameEditing && sameSelected && sameDownloaded && sameProgress
     }
 
     var body: some View {

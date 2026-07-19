@@ -185,13 +185,37 @@ enum SchemaV2: VersionedSchema {
     }
 }
 
-// MARK: - Schema V3 (Current)
+// MARK: - Schema V3
 
 enum SchemaV3: VersionedSchema {
     static let versionIdentifier = Schema.Version(3, 0, 0)
-    
+
     static var models: [any PersistentModel.Type] {
         [Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self]
+    }
+}
+
+// MARK: - Schema V4 (Current)
+
+enum SchemaV4: VersionedSchema {
+    static let versionIdentifier = Schema.Version(4, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Book.self,
+            Chapter.self,
+            Folder.self,
+            ABSServer.self,
+            SchemaV3Marker.self,
+            SyncRuntime.self,
+            SyncEntityState.self,
+            SyncAsset.self,
+            SyncOutboxOperation.self,
+            SyncInboxRecord.self,
+            SyncProgressHead.self,
+            SyncTombstone.self,
+            SyncMigrationJournal.self
+        ]
     }
 }
 
@@ -199,30 +223,35 @@ enum SchemaV3: VersionedSchema {
 
 enum StoryCastMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self, SchemaV3.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self]
     }
-    
+
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4]
     }
-    
+
     static let migrateV1toV2 = MigrationStage.lightweight(
         fromVersion: SchemaV1.self,
         toVersion: SchemaV2.self
     )
-    
+
     static let migrateV2toV3 = MigrationStage.custom(
         fromVersion: SchemaV2.self,
         toVersion: SchemaV3.self,
         willMigrate: nil,
         didMigrate: { _ in }
     )
+
+    static let migrateV3toV4 = MigrationStage.lightweight(
+        fromVersion: SchemaV3.self,
+        toVersion: SchemaV4.self
+    )
 }
 
 // MARK: - Current Schema Version
 
 nonisolated enum CurrentSchema {
-    static let version = SchemaV3.versionIdentifier
-    static let versionString = "3.0.0"
-    static let schemaName = "SchemaV3"
+    static let version = SchemaV4.versionIdentifier
+    static let versionString = "4.0.0"
+    static let schemaName = "SchemaV4"
 }

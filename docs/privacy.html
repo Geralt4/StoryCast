@@ -64,9 +64,9 @@
 </head>
 <body>
     <h1>StoryCast - Privacy Policy</h1>
-    <p class="effective-date">Effective Date: March 14, 2026</p>
+    <p class="effective-date">Effective Date: July 18, 2026</p>
 
-    <p>StoryCast ("the App") is a privacy-focused audiobook player for iOS with optional Audiobookshelf server integration. This policy explains our data practices.</p>
+    <p>StoryCast ("the App") is a privacy-focused audiobook player for iOS with optional iCloud Sync and Audiobookshelf server integration. This policy explains our data practices.</p>
 
     <div class="highlight">
         <h2>NO DATA COLLECTION BY US</h2>
@@ -84,8 +84,8 @@
         <li>Payment information</li>
     </ul>
 
-    <h2>DATA STORAGE ON DEVICE</h2>
-    <p>All data associated with the App remains on your device:</p>
+    <h2>LOCAL DATA STORAGE</h2>
+    <p>By default, data associated with the App remains on your device:</p>
     <ul>
         <li>Audiobook files (imported by you)</li>
         <li>Playback progress and settings</li>
@@ -93,6 +93,15 @@
         <li>App preferences</li>
     </ul>
     <p>This data is stored locally using iOS's standard storage mechanisms (File System and SwiftData).</p>
+
+    <h2>OPTIONAL ICLOUD SYNC</h2>
+    <p>If you explicitly enable <strong>Sync Imported Library</strong> in Settings, StoryCast uses Apple's CloudKit service to store supported data in your private iCloud database:</p>
+    <ul>
+        <li>Locally imported audiobook files and cover art</li>
+        <li>Book metadata, custom folders, and chapters</li>
+        <li>Playback position and related sync records</li>
+    </ul>
+    <p>Audiobookshelf libraries, server addresses, credentials, streamed items, and downloaded Audiobookshelf cache files are not included in iCloud Sync. StoryCast does not receive this iCloud data on developer-operated servers. Turning the feature off pauses synchronization but does not delete data already stored in iCloud.</p>
 
     <h2>AUDIOBOOKSHELF INTEGRATION</h2>
     <p>StoryCast can optionally connect to your self-hosted Audiobookshelf server. This feature is entirely user-initiated and controlled:</p>
@@ -104,8 +113,9 @@
     </ul>
 
     <h2>NETWORK CONNECTIVITY</h2>
-    <p>Network access is only used when you choose to connect to an Audiobookshelf server:</p>
+    <p>Network access is used for features you choose to use:</p>
     <ul>
+        <li><strong>iCloud Sync:</strong> To synchronize your imported library through your private Apple iCloud account (optional and user-controlled)</li>
         <li><strong>Audiobookshelf Server:</strong> To sync your library and stream audiobooks from your own server (user-initiated)</li>
         <li><strong>AirPlay:</strong> To stream audio to AirPlay-compatible devices (user-controlled)</li>
         <li><strong>Import:</strong> Importing audiobook files from cloud storage providers (user-initiated)</li>
@@ -116,13 +126,14 @@
     <p>You have complete control over your data:</p>
     <ul>
         <li><strong>Delete Files:</strong> Remove audiobooks at any time via the App's interface</li>
-        <li><strong>Clear All Data:</strong> Uninstalling the App removes all associated data</li>
+        <li><strong>Clear Local Data:</strong> Uninstalling the App removes its local app data; data previously synchronized to iCloud may remain in your iCloud account</li>
+        <li><strong>Pause iCloud Sync:</strong> Turn off Sync Imported Library at any time without affecting Audiobookshelf</li>
         <li><strong>No Accounts:</strong> The App does not require user accounts or registration</li>
         <li><strong>Disconnect Servers:</strong> You can remove any Audiobookshelf server connection at any time</li>
     </ul>
 
     <h2>THIRD-PARTY SERVICES</h2>
-    <p>StoryCast does not integrate with any third-party analytics, advertising, or data collection services. The only external service the app can connect to is your own Audiobookshelf server, which you configure and control.</p>
+    <p>StoryCast does not integrate with third-party analytics, advertising, or tracking services. Optional external services are Apple iCloud for private library synchronization and any Audiobookshelf server that you configure and control. Apple's handling of iCloud is governed by Apple's terms and privacy policies.</p>
 
     <h2>CHILDREN'S PRIVACY</h2>
     <p>Since we collect no data, we do not knowingly collect personal information from children under 13. The App is safe for all ages.</p>
@@ -146,7 +157,7 @@
 
     <div class="highlight">
         <h2>ACKNOWLEDGMENT</h2>
-        <p>By using StoryCast, you acknowledge that the App respects your privacy by design. When connecting to your own Audiobookshelf server, that connection and any associated data is entirely under your control.</p>
+        <p>By using StoryCast, you acknowledge that optional iCloud Sync and Audiobookshelf connections are features under your control. StoryCast does not operate an intermediary server for either feature.</p>
     </div>
 
     <div class="footer">

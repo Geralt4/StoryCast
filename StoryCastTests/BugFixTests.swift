@@ -109,7 +109,7 @@ nonisolated final class BugFixTests: XCTestCase {
 
     @MainActor
     func testBookUpdateSearchFieldsAfterTitleChange() throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
 
@@ -132,7 +132,7 @@ nonisolated final class BugFixTests: XCTestCase {
 
     @MainActor
     func testSearchMatchesUpdatedTitleAfterSyncFix() throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
 
@@ -404,7 +404,7 @@ nonisolated final class BugFixTests: XCTestCase {
 
     @MainActor
     func testBookMatchesSearchUsesNormalizedFields() throws {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
         let context = ModelContext(container)
 

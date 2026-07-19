@@ -192,6 +192,7 @@ struct LibraryView: View {
                         ForEach(filteredBooks) { book in
                             BookRowView(book: book, onMove: { coordinator.beginSearchBookMove(book) }, onDelete: { coordinator.beginSearchBookDeletion(book) },
                                 onDownload: { bookActions.downloadBook(book) }, onRemoveDownload: { bookActions.removeDownloadedBook(book) })
+                                .equatable()
                         }
                     } header: { Text("Books") }
                 }

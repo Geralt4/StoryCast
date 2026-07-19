@@ -33,6 +33,7 @@ struct FolderDetailListView: View {
                         onDownload: { onDownload(book) },
                         onRemoveDownload: { onRemoveDownload(book) }
                     )
+                    .equatable()
                 }
                 .onDelete(perform: isEditing ? nil : onDeleteBooks)
             }

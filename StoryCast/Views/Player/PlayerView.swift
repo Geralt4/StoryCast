@@ -91,17 +91,20 @@ struct PlayerView: View {
             viewModel.onAppear()
         }
         .overlay(alignment: .top) {
-            if viewModel.showPlaybackSaveError {
-                Text(viewModel.playbackSaveErrorMessage)
-                    .font(.caption)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, LayoutDefaults.mediumSpacing)
-                    .padding(.vertical, LayoutDefaults.smallSpacing)
-                    .background(Color.red.opacity(ColorDefaults.errorOpacity))
-                    .cornerRadius(LayoutDefaults.smallCornerRadius)
-                    .padding(.top, LayoutDefaults.mediumSpacing)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+            Group {
+                if viewModel.showPlaybackSaveError {
+                    Text(viewModel.playbackSaveErrorMessage)
+                        .font(.caption)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, LayoutDefaults.mediumSpacing)
+                        .padding(.vertical, LayoutDefaults.smallSpacing)
+                        .background(Color.red.opacity(ColorDefaults.errorOpacity))
+                        .cornerRadius(LayoutDefaults.smallCornerRadius)
+                        .padding(.top, LayoutDefaults.mediumSpacing)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
             }
+            .animation(.easeInOut(duration: AnimationDefaults.shortDuration), value: viewModel.showPlaybackSaveError)
         }
         .onDisappear {
             viewModel.onDisappear()
@@ -147,7 +150,7 @@ struct PlayerView: View {
 }
 
 #Preview {
-    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
     let container = try! ModelContainer(for: Book.self, Chapter.self, Folder.self, configurations: config)
     let book = Book(
         title: "Sample Book",

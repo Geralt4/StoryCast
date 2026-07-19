@@ -38,13 +38,13 @@ enum PlaybackRanges {
 }
 
 enum TimerDefaults {
-    static let tickInterval: TimeInterval = 1.0
-    static let progressPollingNanoseconds: UInt64 = 500_000_000
+    nonisolated static let tickInterval: TimeInterval = 1.0
+    nonisolated static let progressPollingNanoseconds: UInt64 = 500_000_000
 }
 
 enum ImportDefaults {
-    static let downloadTimeout: TimeInterval = 300
-    static let maxRetries: Int = 3
+    nonisolated static let downloadTimeout: TimeInterval = 300
+    nonisolated static let maxRetries: Int = 3
 }
 
 enum AnimationDefaults {
@@ -141,4 +141,12 @@ enum AppConstants {
     static let supportEmail = "johnmanologlou@gmail.com"
     static let privacyPolicyURL = "https://geralt4.github.io/StoryCast/privacy.html"
     static let supportURL = "https://geralt4.github.io/StoryCast/support.html"
+}
+
+enum CloudSyncDefaults {
+    /// iCloud container identifier. Must match the entry in `StoryCast.entitlements`.
+    nonisolated static let containerIdentifier = "iCloud.IoannisManologlou.StoryCast"
+
+    /// @AppStorage key for the user-facing opt-in toggle. Default `false` (opt-in).
+    nonisolated static let iCloudSyncEnabledKey = "iCloudSyncEnabled"
 }

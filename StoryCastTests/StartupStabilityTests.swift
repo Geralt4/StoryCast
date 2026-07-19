@@ -343,7 +343,11 @@ nonisolated final class StartupStabilityTests: XCTestCase {
     @MainActor
     func testV2ContainerCreationWithMigrationSucceeds() throws {
         let v2Schema = Schema(versionedSchema: SchemaV2.self)
-        let v2Config = ModelConfiguration(schema: v2Schema, isStoredInMemoryOnly: true)
+        let v2Config = ModelConfiguration(
+            schema: v2Schema,
+            isStoredInMemoryOnly: true,
+            cloudKitDatabase: .none
+        )
         
         XCTAssertNoThrow(try ModelContainer(for: v2Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v2Config]))
         
@@ -364,7 +368,11 @@ nonisolated final class StartupStabilityTests: XCTestCase {
     @MainActor
     func testV3ContainerCreationWithMigrationSucceeds() throws {
         let v3Schema = Schema(versionedSchema: SchemaV3.self)
-        let v3Config = ModelConfiguration(schema: v3Schema, isStoredInMemoryOnly: true)
+        let v3Config = ModelConfiguration(
+            schema: v3Schema,
+            isStoredInMemoryOnly: true,
+            cloudKitDatabase: .none
+        )
         
         XCTAssertNoThrow(try ModelContainer(for: v3Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v3Config]))
         
@@ -391,7 +399,7 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         
         let storeURL = tempDir.appendingPathComponent("test.store")
         let schema = Schema(versionedSchema: SchemaV3.self)
-        let config = ModelConfiguration(schema: schema, url: storeURL)
+        let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
         
         let container = try ModelContainer(for: schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [config])
         let context = ModelContext(container)
@@ -411,7 +419,7 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         try context.save()
         
         let reopenedSchema = Schema(versionedSchema: SchemaV3.self)
-        let reopenedConfig = ModelConfiguration(schema: reopenedSchema, url: storeURL)
+        let reopenedConfig = ModelConfiguration(schema: reopenedSchema, url: storeURL, cloudKitDatabase: .none)
         
         let reopenedContainer = try ModelContainer(for: reopenedSchema, migrationPlan: StoryCastMigrationPlan.self, configurations: [reopenedConfig])
         let newContext = ModelContext(reopenedContainer)
@@ -436,7 +444,7 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         
         let storeURL = tempDir.appendingPathComponent("test.store")
         let v2Schema = Schema(versionedSchema: SchemaV2.self)
-        let v2Config = ModelConfiguration(schema: v2Schema, url: storeURL)
+        let v2Config = ModelConfiguration(schema: v2Schema, url: storeURL, cloudKitDatabase: .none)
         
         let v2Container = try ModelContainer(for: v2Schema, configurations: [v2Config])
         let v2Context = ModelContext(v2Container)
@@ -453,7 +461,11 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         try v2Context.save()
         
         let v3Schema = Schema(versionedSchema: SchemaV3.self)
-        let v3Config = ModelConfiguration(schema: v3Schema, url: storeURL)
+        let v3Config = ModelConfiguration(
+            schema: v3Schema,
+            url: storeURL,
+            cloudKitDatabase: .none
+        )
         
         XCTAssertNoThrow(try ModelContainer(for: v3Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v3Config]))
         
@@ -466,6 +478,66 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         XCTAssertEqual(migratedBook?.author, "V2 Author")
         XCTAssertEqual(migratedBook?.duration, 1800)
     }
+
+    @MainActor
+    func testV3DatabaseMigratesToV4WithLocalSyncSidecars() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("V3ToV4Test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        tempURLs.append(tempDir)
+
+        let storeURL = tempDir.appendingPathComponent("test.store")
+        let v3Schema = Schema(versionedSchema: SchemaV3.self)
+        let v3Config = ModelConfiguration(
+            schema: v3Schema,
+            url: storeURL,
+            cloudKitDatabase: .none
+        )
+        let v3Container = try ModelContainer(for: v3Schema, configurations: [v3Config])
+        let v3Context = ModelContext(v3Container)
+
+        let folder = Folder(name: "V3 Folder", isSystem: false, sortOrder: 0)
+        let importedBook = Book(title: "Imported", author: "Author", duration: 1800, folder: folder)
+        let remoteBook = Book(
+            title: "Remote",
+            duration: 900,
+            folder: folder,
+            isRemote: true,
+            remoteItemId: "remote-item",
+            remoteLibraryId: "library",
+            serverId: UUID()
+        )
+        v3Context.insert(folder)
+        v3Context.insert(importedBook)
+        v3Context.insert(remoteBook)
+        try v3Context.save()
+
+        let importedBookID = importedBook.id
+        let remoteBookID = remoteBook.id
+
+        let v4Schema = Schema(versionedSchema: SchemaV4.self)
+        let v4Config = ModelConfiguration(
+            schema: v4Schema,
+            url: storeURL,
+            cloudKitDatabase: .none
+        )
+        let v4Container = try ModelContainer(
+            for: v4Schema,
+            migrationPlan: StoryCastMigrationPlan.self,
+            configurations: [v4Config]
+        )
+        let v4Context = ModelContext(v4Container)
+
+        let importedDescriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.id == importedBookID })
+        let remoteDescriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.id == remoteBookID })
+        XCTAssertEqual(try v4Context.fetch(importedDescriptor).first?.title, "Imported")
+        XCTAssertEqual(try v4Context.fetch(remoteDescriptor).first?.remoteItemId, "remote-item")
+        XCTAssertTrue(try v4Context.fetch(FetchDescriptor<SyncRuntime>()).isEmpty)
+
+        v4Context.insert(SyncRuntime())
+        try v4Context.save()
+        XCTAssertEqual(try v4Context.fetch(FetchDescriptor<SyncRuntime>()).count, 1)
+    }
     
     @MainActor
     func testAppBootstrapOpensExistingV3DatabaseFile() throws {
@@ -476,7 +548,7 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         
         let storeURL = tempDir.appendingPathComponent("default.store")
         let schema = Schema(versionedSchema: SchemaV3.self)
-        let config = ModelConfiguration(schema: schema, url: storeURL)
+        let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
         
         let container = try ModelContainer(for: schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [config])
         let context = ModelContext(container)
@@ -493,7 +565,7 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         try context.save()
         
         let state = AppBootstrap.makeStorageBootstrapState { schema, migrationPlan, configurations in
-            let testConfig = ModelConfiguration(schema: schema, url: storeURL)
+            let testConfig = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
             return try ModelContainer(for: schema, migrationPlan: migrationPlan, configurations: [testConfig])
         }
         
@@ -508,7 +580,7 @@ nonisolated final class StartupStabilityTests: XCTestCase {
     }
 
     private func makeInMemoryContainer() throws -> ModelContainer {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         return try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
     }
     

@@ -97,15 +97,27 @@ final class PlayerViewModel {
     var bookAudioURL: URL? {
         if book.isRemote {
             if book.isDownloaded, let cachePath = book.localCachePath {
-                return StorageManager.shared.remoteAudioCacheURL(for: cachePath)
+                let url = StorageManager.shared.remoteAudioCacheURL(for: cachePath)
+                // Cross-device guard: `isDownloaded` is synced via CloudKit, but
+                // the actual cached file is per-device. If the file isn't
+                // actually present on this device, fall back to streaming.
+                if FileManager.default.fileExists(atPath: url.path) {
+                    return url
+                }
             }
             return nil
         }
+        guard !book.localFileName.isEmpty else { return nil }
         return StorageManager.shared.storyCastLibraryURL.appendingPathComponent(book.localFileName)
     }
 
     var usesRemoteStreaming: Bool {
-        book.isRemote && !book.isDownloaded
+        // A remote book needs streaming whenever we can't resolve a local
+        // file URL — either because it's never been downloaded, or because
+        // its downloaded copy lives on a different device and hasn't been
+        // re-downloaded here yet.
+        guard book.isRemote else { return false }
+        return bookAudioURL == nil
     }
 
     // MARK: - Lifecycle
@@ -127,8 +139,11 @@ final class PlayerViewModel {
             // Cancel any previous remote playback task
             remotePlaybackTask?.cancel()
 
-            if book.isRemote && !book.isDownloaded {
-                // For remote books not downloaded, start a streaming session
+            if usesRemoteStreaming {
+                // For remote books that aren't available as a local file on this
+                // device (either never downloaded, or `isDownloaded` was synced
+                // from another device but the cached file isn't here yet), start
+                // a streaming session.
                 remotePlaybackTask = Task { @MainActor in
                     do {
                         let stream = try await startRemotePlaybackSession()
@@ -152,28 +167,7 @@ final class PlayerViewModel {
                 // audioURL is always non-nil for local books
                 guard let localAudioURL = audioURL else { return }
                 Task { @MainActor in
-                    let fileExists = await Task.detached(priority: .utility) {
-                        FileManager.default.fileExists(atPath: localAudioURL.path)
-                    }.value
-                    guard audioPlayer.currentURL != localAudioURL else { return }
-                    if fileExists {
-                        let backupPosition = restorePositionFromUserDefaults()
-                        let startPosition = backupPosition ?? book.lastPlaybackPosition
-                        audioPlayer.loadAudio(url: localAudioURL, title: book.title, duration: safeDuration, seekTo: startPosition)
-                        
-                        // If we restored from backup, also update the book's position
-                        if let backupPosition = backupPosition {
-                            book.lastPlaybackPosition = backupPosition
-                            do {
-                                try modelContext?.save()
-                                clearPositionBackup()
-                            } catch {
-                                AppLogger.playback.error("Failed to restore backup position: \(error.localizedDescription, privacy: .private)")
-                            }
-                        }
-                    } else {
-                        showMissingFileAlert = true
-                    }
+                    await loadLocalAudio(localAudioURL)
                 }
             }
         }
@@ -183,7 +177,9 @@ final class PlayerViewModel {
         coverArtTask = Task { @MainActor in
             await loadCoverArt()
             guard !Task.isCancelled else { return }
-            guard isCurrentBookLoaded(expectedURL: audioURL) else { return }
+            // Re-resolve the URL because the book can change while cover art is
+            // loading, for example when a remote cache is removed.
+            guard isCurrentBookLoaded(expectedURL: bookAudioURL) else { return }
             audioPlayer.updateNowPlayingInfo(title: book.title, duration: safeDuration, currentTime: audioPlayer.currentTime, artwork: coverArtUIImage)
         }
 
@@ -398,6 +394,31 @@ final class PlayerViewModel {
         return try await sessionManager.startSession(for: book, server: server)
     }
 
+    private func loadLocalAudio(_ localAudioURL: URL) async {
+        let fileExists = await Task.detached(priority: .utility) {
+            FileManager.default.fileExists(atPath: localAudioURL.path)
+        }.value
+        guard audioPlayer.currentURL != localAudioURL else { return }
+        if fileExists {
+            let backupPosition = restorePositionFromUserDefaults()
+            let startPosition = backupPosition ?? book.lastPlaybackPosition
+            audioPlayer.loadAudio(url: localAudioURL, title: book.title, duration: safeDuration, seekTo: startPosition)
+
+            // If we restored from backup, also update the book's position
+            if let backupPosition = backupPosition {
+                book.lastPlaybackPosition = backupPosition
+                do {
+                    try modelContext?.save()
+                    clearPositionBackup()
+                } catch {
+                    AppLogger.playback.error("Failed to restore backup position: \(error.localizedDescription, privacy: .private)")
+                }
+            }
+        } else {
+            showMissingFileAlert = true
+        }
+    }
+
     private func loadCoverArt() async {
         guard let fileName = book.coverArtFileName else {
             self.coverArtUIImage = nil
@@ -406,10 +427,9 @@ final class PlayerViewModel {
 
         let coverArtURL = StorageManager.shared.coverArtURL(for: fileName, isRemote: book.isRemote)
         let image = await CoverArtCache.shared.image(for: fileName, url: coverArtURL)
-
-        await MainActor.run {
-            self.coverArtUIImage = image
-        }
+        // `loadCoverArt` is already on the @MainActor class, so the assignment
+        // runs on the main actor without an explicit `MainActor.run` wrapper.
+        self.coverArtUIImage = image
     }
 
     // MARK: - Playback Position Persistence
@@ -440,6 +460,7 @@ final class PlayerViewModel {
                 // Expected when debounced save is superseded
             } catch {
                 AppLogger.playback.error("Failed to save playback position: \(error.localizedDescription, privacy: .private)")
+                backupPositionToUserDefaults(position)
             }
         }
     }
@@ -630,11 +651,11 @@ final class PlayerViewModel {
         UserDefaults.standard.set(backup, forKey: positionBackupKey)
         AppLogger.playback.debug("Backed up playback position to UserDefaults: \(position)s")
     }
-    
+
     private func clearPositionBackup() {
         UserDefaults.standard.removeObject(forKey: positionBackupKey)
     }
-    
+
     private func restorePositionFromUserDefaults() -> Double? {
         guard let dict = UserDefaults.standard.dictionary(forKey: positionBackupKey),
               let position = dict["currentTime"] as? Double,

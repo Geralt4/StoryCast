@@ -12,6 +12,12 @@ private struct RemoteBookMigrationInfo: Sendable {
 }
 
 actor StorageManager {
+    /// Canonical folder name for locally imported audio.
+    nonisolated static let libraryFolderName = "StoryCastLibrary"
+
+    /// Canonical folder name for locally imported cover art.
+    nonisolated static let coverArtFolderName = "CoverArt"
+
     enum CoverArtLocation {
         case localLibrary
         case remoteCache
@@ -44,6 +50,7 @@ actor StorageManager {
                 return false
             }
         }
+
     }
 
     static let shared = StorageManager()
@@ -464,6 +471,9 @@ actor StorageManager {
         StorageBackupManager.deleteDatabaseFiles()
         
         if let bundleId = Bundle.main.bundleIdentifier {
+            // This is a nuclear reset that removes ALL UserDefaults keys for this
+            // app, including the iCloud sync opt-in toggle. On next launch, sync
+            // will be off and the user must re-enable it in Settings.
             UserDefaults.standard.removePersistentDomain(forName: bundleId)
         }
         

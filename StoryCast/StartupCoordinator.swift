@@ -95,11 +95,19 @@ final class StartupCoordinator: ObservableObject {
 
             var folderFetch = FetchDescriptor<Folder>()
             folderFetch.fetchLimit = 1
-            _ = try? backgroundContext.fetch(folderFetch)
+            do {
+                _ = try backgroundContext.fetch(folderFetch)
+            } catch {
+                AppLogger.app.debug("Prewarm folder fetch skipped: \(error.localizedDescription, privacy: .private)")
+            }
 
             var bookFetch = FetchDescriptor<Book>()
             bookFetch.fetchLimit = 1
-            _ = try? backgroundContext.fetch(bookFetch)
+            do {
+                _ = try backgroundContext.fetch(bookFetch)
+            } catch {
+                AppLogger.app.debug("Prewarm book fetch skipped: \(error.localizedDescription, privacy: .private)")
+            }
         }.value
 
         async let storageTask: Void = Task.detached(priority: .utility) {
@@ -112,6 +120,7 @@ final class StartupCoordinator: ObservableObject {
         }.value
 
         _ = try await (swiftDataTask, storageTask)
+        SyncController.shared.bootstrapIfNeeded(container: container)
     }
 
     private static func migrateNormalizedURL(container: ModelContainer) async {
