@@ -70,13 +70,23 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     }
 
     @MainActor
-    func testMigrationPlanSupportsV1ThroughV4() {
+    func testMigrationPlanSupportsV1ThroughV5() {
         let schemas = StoryCastMigrationPlan.schemas
-        XCTAssertEqual(schemas.count, 4, "Migration plan should support V1 through V4")
+        XCTAssertEqual(schemas.count, 5, "Migration plan should support V1 through V5")
         XCTAssertTrue(schemas.contains { $0 == SchemaV1.self })
         XCTAssertTrue(schemas.contains { $0 == SchemaV2.self })
         XCTAssertTrue(schemas.contains { $0 == SchemaV3.self })
         XCTAssertTrue(schemas.contains { $0 == SchemaV4.self })
+        XCTAssertTrue(schemas.contains { $0 == SchemaV5.self })
+    }
+
+    @MainActor
+    func testSchemaV5AddsAccountAndRepairSidecars() {
+        let models = SchemaV5.models
+        XCTAssertTrue(models.contains(where: { $0 == SyncAccountBinding.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncCloudRecordState.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncReplicaUploadMarker.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncAssetRetentionState.self }))
     }
 
     @MainActor

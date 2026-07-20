@@ -47,6 +47,8 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
         let context = ModelContext(modelContainer)
         let runtime = try SyncRuntimeStore.runtime(in: context)
         SyncOutboxProcessor.recoverInterruptedOperations(in: context)
+        try SyncRecordSystemFieldsStore.migrateLegacyFields(in: context)
+        try SyncOutboxCompactor.compact(in: context)
         let stateSerialization = runtime.engineStateData.flatMap {
             try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0)
         }
@@ -65,6 +67,9 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
         guard accountStatus == .available else {
             throw CloudKitSyncEngineError.accountUnavailable(accountStatus)
         }
+        let currentUser = try await cloudContainer.userRecordID()
+        let accountContext = ModelContext(modelContainer)
+        try SyncAccountCoordinator.validate(accountIdentifier: currentUser.recordName, in: accountContext)
 
         engine.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: zoneID))])
         try await engine.sendChanges()
@@ -105,6 +110,11 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
             AppLogger.sync.debug("Fetched CloudKit database changes")
 
         case .fetchedRecordZoneChanges(let event):
+            let accountContext = ModelContext(modelContainer)
+            if (try? SyncAccountCoordinator.binding(in: accountContext).stateRaw) == "confirmationRequired" {
+                AppLogger.sync.info("Ignored CloudKit changes until account merge is confirmed")
+                return
+            }
             for modification in event.modifications where modification.record.recordID.zoneID == zoneID {
                 do {
                     try await SyncInboxApplier.stage(
@@ -133,7 +143,7 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
             }
 
         case .sentRecordZoneChanges(let event):
-            handleSentRecordChanges(event, syncEngine: syncEngine)
+            await handleSentRecordChanges(event, syncEngine: syncEngine)
 
         case .didFetchRecordZoneChanges(let event):
             if let error = event.error {
@@ -297,7 +307,7 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
     private func handleSentRecordChanges(
         _ event: CKSyncEngine.Event.SentRecordZoneChanges,
         syncEngine: CKSyncEngine
-    ) {
+    ) async {
         let context = ModelContext(modelContainer)
         do {
             let operations = try context.fetch(FetchDescriptor<SyncOutboxOperation>())
@@ -311,6 +321,13 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
                         try SyncRecordSystemFieldsStore.persist(record: record, kind: kind, in: context)
                     }
                     SyncOutboxProcessor.markSent(operation)
+                    removeUploadMarker(recordName: record.recordID.recordName, in: context)
+                    if operation.subjectKindRaw == SyncEntityKind.generation.rawValue,
+                       let payloadData = operation.payloadData,
+                       let payload = try? CloudSyncRecordCodec.decodePayload(CloudSyncGenerationPayload.self, from: payloadData),
+                       let binding = try? SyncAccountCoordinator.binding(in: context) {
+                        binding.boundGenerationID = payload.generationID.uuidString.lowercased()
+                    }
                     if operation.subjectKindRaw == SyncEntityKind.asset.rawValue,
                        let payloadData = operation.payloadData,
                        let payload = try? CloudSyncRecordCodec.decodePayload(CloudSyncAssetPayload.self, from: payloadData),
@@ -327,11 +344,12 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
                     $0.subjectID == recordID.recordName && $0.stateRaw == "sending"
                 }) {
                     SyncOutboxProcessor.markSent(operation)
+                    ensureRetentionState(for: operation, in: context)
                 }
             }
 
             for failure in event.failedRecordSaves {
-                try markFailure(
+                try await markFailure(
                     failure.record.recordID,
                     error: failure.error,
                     operations: operations,
@@ -340,7 +358,7 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
                 )
             }
             for (recordID, error) in event.failedRecordDeletes {
-                try markFailure(
+                try await markFailure(
                     recordID,
                     error: error,
                     operations: operations,
@@ -348,6 +366,7 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
                     syncEngine: syncEngine
                 )
             }
+            try SyncOutboxCompactor.compact(in: context)
             try context.save()
         } catch {
             recordSyncError(error.localizedDescription)
@@ -360,19 +379,34 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
         operations: [SyncOutboxOperation],
         context: ModelContext,
         syncEngine: CKSyncEngine
-    ) throws {
+    ) async throws {
         guard let operation = operations.first(where: {
             $0.subjectID == recordID.recordName && $0.stateRaw == "sending"
         }) else { return }
+        if error.code == .unknownItem,
+           operation.kindRaw == SyncOutboxKind.deleteAsset.rawValue || operation.kindRaw == SyncOutboxKind.deleteRecord.rawValue {
+            SyncOutboxProcessor.markSent(operation)
+            ensureRetentionState(for: operation, in: context)
+            syncEngine.state.remove(pendingRecordZoneChanges: [.deleteRecord(recordID)])
+            return
+        }
         if error.code == .serverRecordChanged,
            let serverRecord = error.serverRecord,
            let kind = SyncEntityKind(rawValue: operation.subjectKindRaw) {
-            try SyncRecordSystemFieldsStore.persist(record: serverRecord, kind: kind, in: context)
-            SyncOutboxProcessor.markRetry(
-                operation,
-                message: "Cloud record changed; retrying with the latest server version.",
-                retryAfter: Date()
-            )
+            do {
+                try await SyncInboxApplier.stage(record: serverRecord, container: modelContainer)
+                let resolutionContext = ModelContext(modelContainer)
+                let localStillWins = try resolutionContext.fetch(FetchDescriptor<SyncReplicaUploadMarker>())
+                    .contains(where: { $0.recordName == recordID.recordName })
+                if localStillWins && kind != .generation {
+                    SyncOutboxProcessor.markRetry(operation, message: "Resolving a newer local change.", retryAfter: Date())
+                } else {
+                    SyncOutboxProcessor.markSent(operation)
+                }
+            } catch {
+                try SyncRecordSystemFieldsStore.persist(record: serverRecord, kind: kind, in: context)
+                SyncOutboxProcessor.markRetry(operation, message: error.localizedDescription, retryAfter: Date())
+            }
             syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID), .deleteRecord(recordID)])
             return
         }
@@ -409,23 +443,26 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
             let runtime = try SyncRuntimeStore.runtime(in: context)
             switch event.changeType {
             case .signIn(let currentUser):
-                runtime.accountIdentifier = currentUser.recordName
-                runtime.lastErrorMessage = nil
+                try SyncAccountCoordinator.validate(accountIdentifier: currentUser.recordName, in: context)
             case .signOut:
                 runtime.accountIdentifier = nil
                 runtime.activeModeRaw = SyncMode.disabled.rawValue
                 runtime.lastErrorMessage = "Sign in to iCloud to sync your imported library."
             case .switchAccounts(_, let currentUser):
-                runtime.accountIdentifier = currentUser.recordName
-                runtime.activeModeRaw = SyncMode.disabled.rawValue
-                runtime.lastErrorMessage = "The iCloud account changed. Retry sync to verify this library before uploading."
+                try SyncAccountCoordinator.validate(accountIdentifier: currentUser.recordName, in: context)
             @unknown default:
                 runtime.lastErrorMessage = "The iCloud account state changed. Retry sync."
             }
             runtime.updatedAt = Date()
             try context.save()
         } catch {
-            recordSyncError(error.localizedDescription)
+            if error is SyncAccountError {
+                AppLogger.sync.info("iCloud account merge confirmation is required")
+                SyncController.shared.accountConfirmationBecameRequired(container: modelContainer)
+                Task { await engine.cancelOperations() }
+            } else {
+                recordSyncError(error.localizedDescription)
+            }
         }
     }
 
@@ -450,6 +487,22 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
             try context.save()
         } catch {
             AppLogger.sync.error("Failed to persist sync error: \(error.localizedDescription, privacy: .private)")
+        }
+    }
+
+    private func removeUploadMarker(recordName: String, in context: ModelContext) {
+        guard let markers = try? context.fetch(FetchDescriptor<SyncReplicaUploadMarker>()) else { return }
+        for marker in markers where marker.recordName == recordName { context.delete(marker) }
+    }
+
+    private func ensureRetentionState(for operation: SyncOutboxOperation, in context: ModelContext) {
+        guard operation.kindRaw == SyncOutboxKind.deleteAsset.rawValue,
+              let data = operation.payloadData,
+              let payload = try? CloudSyncRecordCodec.decodePayload(CloudSyncAssetDeletionPayload.self, from: data),
+              let existing = try? context.fetch(FetchDescriptor<SyncAssetRetentionState>())
+        else { return }
+        if !existing.contains(where: { $0.assetID == payload.assetID }) {
+            context.insert(SyncAssetRetentionState(assetID: payload.assetID))
         }
     }
 }

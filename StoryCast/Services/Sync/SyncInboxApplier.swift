@@ -51,6 +51,8 @@ enum SyncInboxApplier {
             )
             if isTombstoned(kind: .book, entityID: payload.bookID.uuidString, in: context) {
                 inbox.stateRaw = "applied"
+            } else if !shouldInstallAsset(payload, in: context) {
+                inbox.stateRaw = "applied"
             } else {
                 guard let temporaryURL = CloudSyncRecordCodec.assetFileURL(from: record) else {
                     inbox.stateRaw = "blocked"
@@ -104,10 +106,10 @@ enum SyncInboxApplier {
             let payload = try CloudSyncRecordCodec.decodePayload(CloudSyncGenerationPayload.self, from: inbox.payloadData)
             let runtime = try SyncRuntimeStore.runtime(in: context)
             let remoteID = payload.generationID.uuidString.lowercased()
-            if let localID = runtime.generationID, localID != remoteID {
-                throw SyncInboxError.generationMismatch(local: localID, remote: remoteID)
-            }
             runtime.generationID = remoteID
+            if let binding = try? SyncAccountCoordinator.binding(in: context) {
+                binding.boundGenerationID = remoteID
+            }
             runtime.updatedAt = Date()
             return true
 
@@ -155,22 +157,29 @@ enum SyncInboxApplier {
                 duration: payload.duration,
                 folderID: payload.folderID,
                 audioAssetID: payload.audioAssetID,
+                audioAssetRevision: payload.audioAssetRevision ?? 1,
                 coverArtAssetID: payload.coverArtAssetID,
+                coverArtAssetRevision: payload.coverArtAssetRevision,
                 chapterSetID: payload.chapterSetID
             )
             if isStale(
                 id: "book:\(payload.bookID.uuidString.lowercased())",
                 revision: payload.revision,
                 modifiedAt: payload.modifiedAt,
+                deviceID: payload.deviceID,
+                contentDigest: contentDigest,
                 in: context
             ) { return true }
             let assets = try context.fetch(FetchDescriptor<SyncAsset>())
             guard let audio = assets.first(where: {
-                $0.id == payload.audioAssetID && $0.localStateRaw == SyncAssetLocalState.verified.rawValue
+                $0.id == payload.audioAssetID &&
+                $0.contentRevision >= (payload.audioAssetRevision ?? 1) &&
+                $0.localStateRaw == SyncAssetLocalState.verified.rawValue
             }), let audioFileName = audio.localRelativePath else { return false }
             let cover = payload.coverArtAssetID.flatMap { coverID in
                 assets.first(where: {
                     $0.id == coverID && $0.localStateRaw == SyncAssetLocalState.verified.rawValue
+                    && $0.contentRevision >= (payload.coverArtAssetRevision ?? 1)
                 })
             }
             if payload.coverArtAssetID != nil, cover == nil { return false }
@@ -230,7 +239,13 @@ enum SyncInboxApplier {
             let payload = try CloudSyncRecordCodec.decodePayload(CloudSyncChapterPayload.self, from: inbox.payloadData)
             guard !isTombstoned(kind: .book, entityID: payload.bookID.uuidString, in: context) else { return true }
             let stateID = "chapter:\(payload.bookID.uuidString.lowercased()):\(payload.index)"
-            if isStale(id: stateID, revision: payload.revision, modifiedAt: payload.modifiedAt, in: context) {
+            let contentDigest = try SyncContentDigest.chapter(
+                bookID: payload.bookID, chapterSetID: payload.chapterSetID, index: payload.index,
+                title: payload.title, startTime: payload.startTime, endTime: payload.endTime,
+                sourceRaw: payload.sourceRaw
+            )
+            if isStale(id: stateID, revision: payload.revision, modifiedAt: payload.modifiedAt,
+                       deviceID: payload.deviceID, contentDigest: contentDigest, in: context) {
                 return true
             }
             let books = try context.fetch(FetchDescriptor<Book>())
@@ -240,15 +255,6 @@ enum SyncInboxApplier {
                 return $0.title < $1.title
             }
             guard payload.index >= 0, payload.index <= chapters.count else { return false }
-            let contentDigest = try SyncContentDigest.chapter(
-                bookID: payload.bookID,
-                chapterSetID: payload.chapterSetID,
-                index: payload.index,
-                title: payload.title,
-                startTime: payload.startTime,
-                endTime: payload.endTime,
-                sourceRaw: payload.sourceRaw
-            )
             guard shouldApply(
                 id: stateID,
                 kind: .chapter,
@@ -456,13 +462,22 @@ enum SyncInboxApplier {
     ) -> Bool {
         let states = (try? context.fetch(FetchDescriptor<SyncEntityState>())) ?? []
         if let state = states.first(where: { $0.id == id }) {
-            if revision < state.revision { return false }
-            if revision == state.revision, modifiedAt < state.modifiedAt { return false }
+            let decision = SyncVersionResolver.decide(
+                localRevision: state.revision, localModifiedAt: state.modifiedAt,
+                localDeviceID: state.deviceID, localDigest: state.contentDigest ?? "",
+                remoteRevision: revision, remoteModifiedAt: modifiedAt,
+                remoteDeviceID: deviceID, remoteDigest: contentDigest
+            )
+            if decision == .localWins {
+                markForUpload(id: id, recordName: recordName, reason: "conflictWinner", in: context)
+                return false
+            }
             state.recordName = recordName
             state.revision = revision
             state.modifiedAt = modifiedAt
             state.deviceID = deviceID
             state.contentDigest = contentDigest
+            removeUploadMarker(id: id, in: context)
             return true
         }
         context.insert(SyncEntityState(
@@ -482,12 +497,58 @@ enum SyncInboxApplier {
         id: String,
         revision: Int64,
         modifiedAt: Date,
+        deviceID: String,
+        contentDigest: String,
         in context: ModelContext
     ) -> Bool {
         let states = (try? context.fetch(FetchDescriptor<SyncEntityState>())) ?? []
         guard let state = states.first(where: { $0.id == id }) else { return false }
-        if revision != state.revision { return revision < state.revision }
-        return modifiedAt < state.modifiedAt
+        let decision = SyncVersionResolver.decide(
+            localRevision: state.revision, localModifiedAt: state.modifiedAt,
+            localDeviceID: state.deviceID, localDigest: state.contentDigest ?? "",
+            remoteRevision: revision, remoteModifiedAt: modifiedAt,
+            remoteDeviceID: deviceID, remoteDigest: contentDigest
+        )
+        if decision == .localWins {
+            markForUpload(id: id, recordName: state.recordName, reason: "staleCloudRecord", in: context)
+            return true
+        }
+        return false
+    }
+
+    private static func shouldInstallAsset(_ payload: CloudSyncAssetPayload, in context: ModelContext) -> Bool {
+        let assets = (try? context.fetch(FetchDescriptor<SyncAsset>())) ?? []
+        guard let local = assets.first(where: { $0.id == payload.assetID }) else { return true }
+        if payload.contentRevision != local.contentRevision {
+            if payload.contentRevision < local.contentRevision {
+                local.cloudStateRaw = SyncAssetCloudState.notScheduled.rawValue
+                return false
+            }
+            return true
+        }
+        if payload.sha256Hex == local.sha256Hex {
+            local.cloudStateRaw = SyncAssetCloudState.published.rawValue
+            return false
+        }
+        let localDate = local.lastVerifiedAt ?? .distantPast
+        if payload.readyAt != localDate {
+            if payload.readyAt < localDate { local.cloudStateRaw = SyncAssetCloudState.notScheduled.rawValue }
+            return payload.readyAt > localDate
+        }
+        let remoteWins = payload.sha256Hex > local.sha256Hex
+        if !remoteWins { local.cloudStateRaw = SyncAssetCloudState.notScheduled.rawValue }
+        return remoteWins
+    }
+
+    private static func markForUpload(id: String, recordName: String, reason: String, in context: ModelContext) {
+        let markers = (try? context.fetch(FetchDescriptor<SyncReplicaUploadMarker>())) ?? []
+        guard !markers.contains(where: { $0.id == id }) else { return }
+        context.insert(SyncReplicaUploadMarker(id: id, recordName: recordName, reasonRaw: reason))
+    }
+
+    private static func removeUploadMarker(id: String, in context: ModelContext) {
+        let markers = (try? context.fetch(FetchDescriptor<SyncReplicaUploadMarker>())) ?? []
+        for marker in markers where marker.id == id { context.delete(marker) }
     }
 
     private static func isTombstoned(

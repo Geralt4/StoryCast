@@ -17,7 +17,9 @@ nonisolated enum SyncContentDigest {
         duration: Double,
         folderID: UUID?,
         audioAssetID: UUID,
+        audioAssetRevision: Int64 = 1,
         coverArtAssetID: UUID?,
+        coverArtAssetRevision: Int64? = nil,
         chapterSetID: UUID
     ) throws -> String {
         try digest(BookContent(
@@ -27,7 +29,9 @@ nonisolated enum SyncContentDigest {
             duration: duration,
             folderID: folderID,
             audioAssetID: audioAssetID,
+            audioAssetRevision: audioAssetRevision,
             coverArtAssetID: coverArtAssetID,
+            coverArtAssetRevision: coverArtAssetRevision,
             chapterSetID: chapterSetID
         ))
     }
@@ -72,7 +76,9 @@ nonisolated enum SyncContentDigest {
         let duration: Double
         let folderID: UUID?
         let audioAssetID: UUID
+        let audioAssetRevision: Int64
         let coverArtAssetID: UUID?
+        let coverArtAssetRevision: Int64?
         let chapterSetID: UUID
     }
 

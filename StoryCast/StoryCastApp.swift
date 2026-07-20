@@ -47,7 +47,7 @@ struct StoryCastApp: App {
             }
         case .unrecoverable(let error):
             storageBootstrapState = .unrecoverable(error)
-            let schema = Schema(versionedSchema: SchemaV4.self)
+            let schema = Schema(versionedSchema: SchemaV5.self)
             let config = ModelConfiguration(
                 schema: schema,
                 isStoredInMemoryOnly: true,
@@ -64,14 +64,14 @@ struct StoryCastApp: App {
     }
 
     private nonisolated static var lastResortContainer: ModelContainer? {
-        let schema = Schema(versionedSchema: SchemaV4.self)
+        let schema = Schema(versionedSchema: SchemaV5.self)
         let config = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true,
             cloudKitDatabase: .none
         )
 
-        // Strategy 1: Try SchemaV4
+        // Strategy 1: Try the current schema
         if let container = try? ModelContainer(for: schema, configurations: [config]) {
             return container
         }
@@ -87,7 +87,7 @@ struct StoryCastApp: App {
     }
     
     private static let fatalFallbackContainer: ModelContainer = {
-        let schema = Schema(versionedSchema: SchemaV4.self)
+        let schema = Schema(versionedSchema: SchemaV5.self)
         let config = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true,

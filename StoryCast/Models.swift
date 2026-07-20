@@ -219,15 +219,23 @@ enum SchemaV4: VersionedSchema {
     }
 }
 
+enum SchemaV5: VersionedSchema {
+    static let versionIdentifier = Schema.Version(5, 0, 0)
+    static var models: [any PersistentModel.Type] {
+        SchemaV4.models + [SyncAccountBinding.self, SyncCloudRecordState.self,
+            SyncReplicaUploadMarker.self, SyncAssetRetentionState.self]
+    }
+}
+
 // MARK: - Migration Plan
 
 enum StoryCastMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self]
+        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self]
     }
 
     static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4]
+        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5]
     }
 
     static let migrateV1toV2 = MigrationStage.lightweight(
@@ -246,12 +254,14 @@ enum StoryCastMigrationPlan: SchemaMigrationPlan {
         fromVersion: SchemaV3.self,
         toVersion: SchemaV4.self
     )
+
+    static let migrateV4toV5 = MigrationStage.lightweight(fromVersion: SchemaV4.self, toVersion: SchemaV5.self)
 }
 
 // MARK: - Current Schema Version
 
 nonisolated enum CurrentSchema {
-    static let version = SchemaV4.versionIdentifier
-    static let versionString = "4.0.0"
-    static let schemaName = "SchemaV4"
+    static let version = SchemaV5.versionIdentifier
+    static let versionString = "5.0.0"
+    static let schemaName = "SchemaV5"
 }
