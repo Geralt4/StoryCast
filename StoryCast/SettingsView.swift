@@ -125,6 +125,17 @@ struct SettingsView: View {
                         }
                         .disabled(syncIsBusy)
                     }
+                    if case .accountConfirmationRequired = syncController.status.activity {
+                        Button("Merge This Library with New Account") {
+                            Task { await syncController.confirmAccountMerge(container: modelContext.container) }
+                        }
+                        Button("Turn Off Sync", role: .cancel) {
+                            Task {
+                                iCloudSyncEnabled = false
+                                await syncController.declineAccountMerge(container: modelContext.container)
+                            }
+                        }
+                    }
                 } header: {
                     Text("iCloud")
                 } footer: {
@@ -231,6 +242,7 @@ struct SettingsView: View {
         case .waiting: "Needs attention"
         case .idle: "Up to date"
         case .failed: "Sync failed"
+        case .accountConfirmationRequired: "Confirm new iCloud account"
         }
     }
 
@@ -238,6 +250,8 @@ struct SettingsView: View {
         switch syncController.status.activity {
         case .waiting(let reason): reason
         case .failed(let message): message
+        case .accountConfirmationRequired:
+            "Merging uploads this device's imported library. Deletions from the previous account are not carried over."
         case .idle:
             syncController.status.lastSuccessfulSyncAt.map {
                 "Last synced \($0.formatted(date: .abbreviated, time: .shortened))"
@@ -250,7 +264,7 @@ struct SettingsView: View {
         switch syncController.status.activity {
         case .disabled: "icloud.slash"
         case .idle: "checkmark.icloud"
-        case .failed, .waiting: "exclamationmark.icloud"
+        case .failed, .waiting, .accountConfirmationRequired: "exclamationmark.icloud"
         case .preparing, .syncing: "icloud"
         }
     }
@@ -258,7 +272,7 @@ struct SettingsView: View {
     private var syncStatusColor: Color {
         switch syncController.status.activity {
         case .idle: .green
-        case .failed, .waiting: .orange
+        case .failed, .waiting, .accountConfirmationRequired: .orange
         default: .secondary
         }
     }

@@ -34,6 +34,22 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertEqual(transport.fetchCount, 1)
     }
 
+    func testControllerCoalescesRequestArrivingDuringSync() async throws {
+        let container = try makeV5Container()
+        let transport = BlockingCloudSyncTransport()
+        let controller = SyncController { _ in transport }
+        try controller.setDesiredMode(.enabled, container: container)
+
+        let first = Task { await controller.synchronizeIfEnabled(container: container, auditLibrary: false) }
+        while transport.prepareCount == 0 { await Task.yield() }
+        await controller.synchronizeIfEnabled(container: container, auditLibrary: true)
+        transport.releaseFirstPrepare()
+        await first.value
+        for _ in 0..<100 where transport.prepareCount < 2 { await Task.yield() }
+
+        XCTAssertEqual(transport.prepareCount, 2)
+    }
+
     func testOutboxUpsertCoalescesPendingOperation() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
@@ -185,6 +201,55 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertEqual(SyncProgressConflictResolver.winner(earlier, sameTimeLaterSequence), sameTimeLaterSequence)
     }
 
+    func testMetadataConflictResolverUsesStableTotalOrdering() {
+        let date = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(SyncVersionResolver.decide(
+            localRevision: 2, localModifiedAt: date, localDeviceID: "a", localDigest: "a",
+            remoteRevision: 1, remoteModifiedAt: date.addingTimeInterval(10), remoteDeviceID: "z", remoteDigest: "z"
+        ), .localWins)
+        XCTAssertEqual(SyncVersionResolver.decide(
+            localRevision: 2, localModifiedAt: date, localDeviceID: "a", localDigest: "a",
+            remoteRevision: 2, remoteModifiedAt: date, remoteDeviceID: "b", remoteDigest: "a"
+        ), .remoteWins)
+        XCTAssertEqual(SyncVersionResolver.decide(
+            localRevision: 2, localModifiedAt: date, localDeviceID: "a", localDigest: "a",
+            remoteRevision: 2, remoteModifiedAt: date, remoteDeviceID: "a", remoteDigest: "a"
+        ), .equivalent)
+    }
+
+    func testAccountSwitchRequiresConfirmationAndResetDoesNotCarryTombstones() throws {
+        let container = try makeV5Container()
+        let context = ModelContext(container)
+        try SyncAccountCoordinator.validate(accountIdentifier: "account-a", in: context)
+        XCTAssertThrowsError(try SyncAccountCoordinator.validate(accountIdentifier: "account-b", in: context))
+        let deletedID = UUID().uuidString.lowercased()
+        context.insert(SyncTombstone(
+            id: SyncRecordName.tombstone(kind: .book, id: deletedID),
+            entityKindRaw: SyncEntityKind.book.rawValue, entityID: deletedID,
+            revision: 1, deviceID: "device"
+        ))
+        try context.save()
+
+        try SyncAccountCoordinator.confirmMerge(in: context)
+
+        XCTAssertEqual(try SyncAccountCoordinator.binding(in: context).confirmedAccountIdentifier, "account-b")
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SyncTombstone>()).isEmpty)
+        XCTAssertNil(try SyncRuntimeStore.runtime(in: context).generationID)
+    }
+
+    func testOutboxCompactorKeepsOnlyNewestSentMarker() throws {
+        let container = try makeV5Container()
+        let context = ModelContext(container)
+        let older = SyncOutboxOperation(kindRaw: SyncOutboxKind.saveRecord.rawValue, subjectKindRaw: SyncEntityKind.book.rawValue, subjectID: "book/1", stateRaw: "sent", createdAt: .distantPast)
+        let newer = SyncOutboxOperation(kindRaw: SyncOutboxKind.saveRecord.rawValue, subjectKindRaw: SyncEntityKind.book.rawValue, subjectID: "book/1", stateRaw: "sent", createdAt: Date())
+        context.insert(older)
+        context.insert(newer)
+        try context.save()
+        try SyncOutboxCompactor.compact(in: context)
+        try context.save()
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SyncOutboxOperation>()).map(\.id), [newer.id])
+    }
+
     func testRecordNamesUseStableIDsInsteadOfUserContent() {
         let bookID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let assetID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
@@ -248,6 +313,46 @@ final class SyncFoundationTests: XCTestCase {
         let states = try context.fetch(FetchDescriptor<SyncEntityState>())
         XCTAssertTrue(states.contains { $0.id == "book:\(imported.id.uuidString.lowercased())" })
         XCTAssertFalse(states.contains { $0.id == "book:\(remote.id.uuidString.lowercased())" })
+    }
+
+    func testAuditJournalNeedsAttentionWhenFileIsMissing() async throws {
+        let container = try makeV5Container()
+        let context = ModelContext(container)
+        context.insert(Book(title: "Missing", localFileName: "does-not-exist.m4b", duration: 10))
+        try context.save()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let result = await SyncLibraryAuditor.audit(
+            container: container, deviceID: "device", libraryURL: directory,
+            coverArtDirectoryURL: directory
+        )
+        let journal = try XCTUnwrap(try context.fetch(FetchDescriptor<SyncMigrationJournal>()).first)
+        XCTAssertEqual(result.missingAssetCount, 1)
+        XCTAssertEqual(journal.phaseRaw, "needsAttention")
+        XCTAssertNil(journal.completedAt)
+    }
+
+    func testV4StoreMigratesToV5WithoutLosingLibrary() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("V4toV5_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("default.store")
+        let bookID = UUID()
+        do {
+            let schema = Schema(versionedSchema: SchemaV4.self)
+            let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(container)
+            context.insert(Book(id: bookID, title: "Preserved", localFileName: "book.m4b", duration: 1))
+            try context.save()
+        }
+        let schema = Schema(versionedSchema: SchemaV5.self)
+        let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+        let container = try ModelContainer(for: schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [config])
+        let books = try ModelContext(container).fetch(FetchDescriptor<Book>())
+        XCTAssertEqual(books.first(where: { $0.id == bookID })?.title, "Preserved")
     }
 
     func testPlannerCreatesDependencyOrderedFullLibraryOutbox() throws {
@@ -387,6 +492,43 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertEqual(chapterPayload.revision, 2)
     }
 
+    func testPlannerDeletesOldAssetOnlyAfterNewAssetAndBook() throws {
+        let container = try makeV5Container()
+        let context = ModelContext(container)
+        let book = Book(title: "Updated Audio", localFileName: "book.m4b", duration: 120)
+        let asset = SyncAsset(
+            bookID: book.id, kindRaw: SyncAssetKind.audio.rawValue, contentRevision: 2,
+            originalFileName: "book.m4b", pathExtension: "m4b",
+            contentTypeIdentifier: "public.audiovisual-content", byteCount: 4,
+            sha256Hex: "revision-2", localRelativePath: "book.m4b",
+            localStateRaw: SyncAssetLocalState.verified.rawValue,
+            cloudStateRaw: SyncAssetCloudState.notScheduled.rawValue, lastVerifiedAt: Date()
+        )
+        let oldDigest = try SyncContentDigest.book(
+            id: book.id, title: book.title, author: nil, duration: book.duration,
+            folderID: nil, audioAssetID: asset.id, audioAssetRevision: 1,
+            coverArtAssetID: nil, chapterSetID: book.id
+        )
+        context.insert(book)
+        context.insert(asset)
+        context.insert(SyncEntityState(
+            id: "book:\(book.id.uuidString.lowercased())", entityKindRaw: SyncEntityKind.book.rawValue,
+            localEntityID: book.id.uuidString.lowercased(), recordName: SyncRecordName.book(book.id),
+            revision: 1, deviceID: "device", contentDigest: oldDigest
+        ))
+        try context.save()
+
+        _ = try SyncOutboxPlanner.plan(container: container, deviceID: "device")
+        let operations = try context.fetch(FetchDescriptor<SyncOutboxOperation>())
+        let upload = try XCTUnwrap(operations.first { $0.subjectID == SyncRecordName.asset(asset.id, revision: 2) })
+        let bookSave = try XCTUnwrap(operations.first { $0.subjectID == SyncRecordName.book(book.id) })
+        let deletion = try XCTUnwrap(operations.first {
+            $0.kindRaw == SyncOutboxKind.deleteAsset.rawValue &&
+            $0.subjectID == SyncRecordName.asset(asset.id, revision: 1)
+        })
+        XCTAssertEqual(Set(try SyncOutboxDependencyCodec.decode(deletion.dependencyData)), [upload.id, bookSave.id])
+    }
+
     func testInboxAppliesBookWithoutAudiobookshelfState() async throws {
         let container = try makeContainer()
         let context = ModelContext(container)
@@ -458,6 +600,45 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertNil(syncedBook.remoteLibraryId)
         XCTAssertNil(syncedBook.serverId)
         XCTAssertNil(syncedBook.localCachePath)
+    }
+
+    func testInboxRepairsStaleCloudMetadataAndAcceptsNewerWinner() async throws {
+        let container = try makeV5Container()
+        let context = ModelContext(container)
+        let folder = Folder(name: "Local Winner", isSystem: false, sortOrder: 1)
+        let stateID = "folder:\(folder.id.uuidString.lowercased())"
+        let localDigest = try SyncContentDigest.folder(id: folder.id, name: folder.name, sortOrder: folder.sortOrder)
+        context.insert(folder)
+        context.insert(SyncEntityState(
+            id: stateID, entityKindRaw: SyncEntityKind.folder.rawValue,
+            localEntityID: folder.id.uuidString.lowercased(), recordName: SyncRecordName.folder(folder.id),
+            revision: 2, modifiedAt: Date(timeIntervalSince1970: 2_000),
+            deviceID: "device-b", contentDigest: localDigest
+        ))
+        try context.save()
+        let zone = CKRecordZone.ID(zoneName: "StoryCastLibraryV1")
+
+        let stale = CloudSyncFolderPayload(
+            folderID: folder.id, name: "Stale Cloud", isSystem: false, sortOrder: 1,
+            revision: 1, modifiedAt: Date(timeIntervalSince1970: 1_000), deviceID: "device-a"
+        )
+        try await SyncInboxApplier.stage(record: try CloudSyncRecordCodec.makeRecord(
+            type: .folder, recordName: SyncRecordName.folder(folder.id), zoneID: zone, payload: stale
+        ), container: container)
+        var verification = ModelContext(container)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<Folder>()).first?.name, "Local Winner")
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<SyncReplicaUploadMarker>()).count, 1)
+
+        let newer = CloudSyncFolderPayload(
+            folderID: folder.id, name: "New Cloud Winner", isSystem: false, sortOrder: 1,
+            revision: 3, modifiedAt: Date(timeIntervalSince1970: 3_000), deviceID: "device-a"
+        )
+        try await SyncInboxApplier.stage(record: try CloudSyncRecordCodec.makeRecord(
+            type: .folder, recordName: SyncRecordName.folder(folder.id), zoneID: zone, payload: newer
+        ), container: container)
+        verification = ModelContext(container)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<Folder>()).first?.name, "New Cloud Winner")
+        XCTAssertTrue(try verification.fetch(FetchDescriptor<SyncReplicaUploadMarker>()).isEmpty)
     }
 
     func testInboxWaitsForOutOfOrderChapters() async throws {
@@ -565,6 +746,12 @@ final class SyncFoundationTests: XCTestCase {
         )
         return try ModelContainer(for: schema, configurations: [config])
     }
+
+    private func makeV5Container() throws -> ModelContainer {
+        let schema = Schema(versionedSchema: SchemaV5.self)
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        return try ModelContainer(for: schema, configurations: [config])
+    }
 }
 
 @MainActor
@@ -577,4 +764,21 @@ private final class NoOpCloudSyncTransport: CloudSyncTransport {
     func sendPendingChanges() async throws { sendCount += 1 }
     func fetchChanges() async throws { fetchCount += 1 }
     func cancel() async {}
+}
+
+@MainActor
+private final class BlockingCloudSyncTransport: CloudSyncTransport {
+    private(set) var prepareCount = 0
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func prepareZoneAndFetchChanges() async throws {
+        prepareCount += 1
+        if prepareCount == 1 {
+            await withCheckedContinuation { continuation = $0 }
+        }
+    }
+    func releaseFirstPrepare() { continuation?.resume(); continuation = nil }
+    func sendPendingChanges() async throws {}
+    func fetchChanges() async throws {}
+    func cancel() async { releaseFirstPrepare() }
 }

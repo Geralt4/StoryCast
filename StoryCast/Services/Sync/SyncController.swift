@@ -17,6 +17,8 @@ final class SyncController: ObservableObject {
     private var transport: (any CloudSyncTransport)?
     private var didBootstrap = false
     private var isSynchronizing = false
+    private var syncRequestedWhileRunning = false
+    private var auditRequestedWhileRunning = false
 
     init(transportFactory: @escaping TransportFactory = { try CloudKitSyncEngine(modelContainer: $0) }) {
         self.transportFactory = transportFactory
@@ -37,6 +39,9 @@ final class SyncController: ObservableObject {
             }
             didBootstrap = true
             status = status(for: runtime)
+            if try SyncAccountCoordinator.binding(in: context).stateRaw == "confirmationRequired" {
+                status = SyncStatus(mode: .enabled, activity: .accountConfirmationRequired, lastSuccessfulSyncAt: runtime.lastSuccessfulSyncAt)
+            }
 
             if optedIn {
                 Task { [weak self] in
@@ -173,7 +178,7 @@ final class SyncController: ObservableObject {
             )
             try context.save()
 
-            try await ensureTransport(container: container).sendPendingChanges()
+            await synchronizeIfEnabled(container: container, auditLibrary: false)
         } catch {
             publishFailure(error, container: container)
         }
@@ -188,6 +193,14 @@ final class SyncController: ObservableObject {
 
         do {
             let runtime = try SyncRuntimeStore.runtime(in: context)
+            let deletedAssets: [(UUID, Int64)]
+            if entityKind == .book, let bookID = UUID(uuidString: entityID) {
+                deletedAssets = try context.fetch(FetchDescriptor<SyncAsset>())
+                    .filter { $0.bookID == bookID }
+                    .map { ($0.id, $0.contentRevision) }
+            } else {
+                deletedAssets = []
+            }
             try SyncDeletionCoordinator.discardReplicaState(
                 entityKind: entityKind,
                 entityID: entityID,
@@ -226,16 +239,30 @@ final class SyncController: ObservableObject {
                 revision: nextRevision,
                 deviceID: deviceID
             )
-            _ = try SyncOutboxStore.upsert(
+            let tombstoneOperation = try SyncOutboxStore.upsert(
                 kind: .saveRecord,
                 subjectKind: .tombstone,
                 subjectID: tombstoneID,
                 payloadData: try CloudSyncRecordCodec.encodePayload(payload),
                 in: context
             )
+            for (assetID, latestRevision) in deletedAssets where latestRevision > 0 {
+                for revision in 1...latestRevision {
+                    _ = try SyncOutboxStore.upsert(
+                        kind: .deleteAsset,
+                        subjectKind: .asset,
+                        subjectID: SyncRecordName.asset(assetID, revision: revision),
+                        payloadData: try CloudSyncRecordCodec.encodePayload(
+                            CloudSyncAssetDeletionPayload(assetID: assetID, revision: revision)
+                        ),
+                        dependencyIDs: [tombstoneOperation.id],
+                        in: context
+                    )
+                }
+            }
             try context.save()
             if syncIsEnabled {
-                try await ensureTransport(container: container).sendPendingChanges()
+                await synchronizeIfEnabled(container: container, auditLibrary: false)
             }
         } catch {
             publishFailure(error, container: container)
@@ -243,9 +270,21 @@ final class SyncController: ObservableObject {
     }
 
     private func synchronize(container: ModelContainer, auditLibrary: Bool) async {
-        guard !isSynchronizing else { return }
+        guard !isSynchronizing else {
+            syncRequestedWhileRunning = true
+            auditRequestedWhileRunning = auditRequestedWhileRunning || auditLibrary
+            return
+        }
         isSynchronizing = true
-        defer { isSynchronizing = false }
+        defer {
+            isSynchronizing = false
+            if syncRequestedWhileRunning {
+                let needsAudit = auditRequestedWhileRunning
+                syncRequestedWhileRunning = false
+                auditRequestedWhileRunning = false
+                Task { [weak self] in await self?.synchronize(container: container, auditLibrary: needsAudit) }
+            }
+        }
 
         let previousSuccess = status.lastSuccessfulSyncAt
         status = SyncStatus(mode: .enabled, activity: auditLibrary ? .preparing : .syncing, lastSuccessfulSyncAt: previousSuccess)
@@ -309,14 +348,49 @@ final class SyncController: ObservableObject {
             completionRuntime.updatedAt = completedAt
             try completionContext.save()
             status = SyncStatus(mode: .enabled, activity: .idle, lastSuccessfulSyncAt: completedAt)
+        } catch SyncAccountError.confirmationRequired {
+            status = SyncStatus(mode: .enabled, activity: .accountConfirmationRequired, lastSuccessfulSyncAt: previousSuccess)
         } catch {
             publishFailure(error, container: container)
         }
     }
 
+    func confirmAccountMerge(container: ModelContainer) async {
+        if let transport { await transport.cancel() }
+        transport = nil
+        do {
+            let context = ModelContext(container)
+            try SyncAccountCoordinator.confirmMerge(in: context)
+            await synchronize(container: container, auditLibrary: true)
+        } catch {
+            publishFailure(error, container: container)
+        }
+    }
+
+    func declineAccountMerge(container: ModelContainer) async {
+        if let transport { await transport.cancel() }
+        transport = nil
+        do {
+            try SyncAccountCoordinator.declineMerge(in: ModelContext(container))
+            status = .disabled
+        } catch {
+            publishFailure(error, container: container)
+        }
+    }
+
+    func accountConfirmationBecameRequired(container: ModelContainer) {
+        let runtime = try? SyncRuntimeStore.runtime(in: ModelContext(container))
+        status = SyncStatus(
+            mode: .enabled, activity: .accountConfirmationRequired,
+            lastSuccessfulSyncAt: runtime?.lastSuccessfulSyncAt ?? status.lastSuccessfulSyncAt
+        )
+    }
+
     private func disable(container: ModelContainer) async {
         if let transport { await transport.cancel() }
         transport = nil
+        syncRequestedWhileRunning = false
+        auditRequestedWhileRunning = false
         do {
             try setDesiredMode(.disabled, container: container)
         } catch {
@@ -401,7 +475,10 @@ enum SyncOutboxStore {
         in context: ModelContext
     ) throws -> SyncOutboxOperation {
         let dependencyData = try SyncOutboxDependencyCodec.encode(dependencyIDs)
-        let operations = try context.fetch(FetchDescriptor<SyncOutboxOperation>())
+        let targetSubjectID = subjectID
+        let operations = try context.fetch(FetchDescriptor<SyncOutboxOperation>(
+            predicate: #Predicate { $0.subjectID == targetSubjectID }
+        ))
         if let existing = operations.first(where: {
             $0.kindRaw == kind.rawValue &&
             $0.subjectKindRaw == subjectKind.rawValue &&

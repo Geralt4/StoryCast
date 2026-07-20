@@ -52,6 +52,8 @@ nonisolated struct CloudSyncBookPayload: Codable, Equatable, Sendable {
     let folderID: UUID?
     let audioAssetID: UUID
     let coverArtAssetID: UUID?
+    var audioAssetRevision: Int64? = nil
+    var coverArtAssetRevision: Int64? = nil
     let chapterSetID: UUID
     let revision: Int64
     let modifiedAt: Date
@@ -93,6 +95,12 @@ nonisolated struct CloudSyncAssetPayload: Codable, Equatable, Sendable {
     let byteCount: Int64
     let sha256Hex: String
     let readyAt: Date
+    var deviceID: String? = nil
+}
+
+nonisolated struct CloudSyncAssetDeletionPayload: Codable, Equatable, Sendable {
+    let assetID: UUID
+    let revision: Int64
 }
 
 nonisolated struct CloudSyncProgressPayload: Codable, Equatable, Sendable {
@@ -110,7 +118,7 @@ nonisolated struct CloudSyncTombstonePayload: Codable, Equatable, Sendable {
 /// Uses one stable JSON payload field per record. This keeps the production
 /// CloudKit schema additive and makes local validation independent of Core Data.
 nonisolated enum CloudSyncRecordCodec {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
 
     static func makeRecord<Payload: Encodable>(
         type: CloudSyncRecordType,

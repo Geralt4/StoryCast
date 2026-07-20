@@ -27,7 +27,7 @@ enum AppBootstrap {
     nonisolated static func makeStorageBootstrapState(
         containerFactory: ContainerFactory = defaultContainerFactory
     ) -> StorageBootstrapState {
-        let schema = Schema(versionedSchema: SchemaV4.self)
+        let schema = Schema(versionedSchema: SchemaV5.self)
         let config = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,
@@ -70,7 +70,7 @@ enum AppBootstrap {
     }
 
     nonisolated static func makeRecoveryContainer() -> ModelContainer? {
-        let schema = Schema(versionedSchema: SchemaV4.self)
+        let schema = Schema(versionedSchema: SchemaV5.self)
 
         var lastError: Error?
         for attempt in 1...3 {
@@ -105,7 +105,7 @@ enum AppBootstrap {
 
         // Try to open the backup directly as a ModelContainer
         // This works if the backup has a compatible schema (no migration needed since we open existing data)
-        let schema = Schema(versionedSchema: SchemaV4.self)
+        let schema = Schema(versionedSchema: SchemaV5.self)
         // Backups are always opened as local-only; promoting them into CloudKit during
         // recovery is a separate flow that would require user confirmation.
         let backupConfig = ModelConfiguration(
@@ -167,7 +167,7 @@ enum AppBootstrap {
         }
 
         // 3. Create NEW persistent container (NOT in-memory!)
-        let schema = Schema(versionedSchema: SchemaV4.self)
+        let schema = Schema(versionedSchema: SchemaV5.self)
         let config = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: false,

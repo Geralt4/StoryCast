@@ -12,6 +12,22 @@ nonisolated enum SyncActivity: Equatable, Sendable {
     case waiting(reason: String)
     case idle
     case failed(message: String)
+    case accountConfirmationRequired
+}
+
+nonisolated enum SyncVersionDecision: Equatable, Sendable { case localWins, remoteWins, equivalent }
+
+nonisolated enum SyncVersionResolver {
+    static func decide(
+        localRevision: Int64, localModifiedAt: Date, localDeviceID: String, localDigest: String,
+        remoteRevision: Int64, remoteModifiedAt: Date, remoteDeviceID: String, remoteDigest: String
+    ) -> SyncVersionDecision {
+        if localRevision != remoteRevision { return localRevision > remoteRevision ? .localWins : .remoteWins }
+        if localModifiedAt != remoteModifiedAt { return localModifiedAt > remoteModifiedAt ? .localWins : .remoteWins }
+        if localDeviceID != remoteDeviceID { return localDeviceID > remoteDeviceID ? .localWins : .remoteWins }
+        if localDigest != remoteDigest { return localDigest > remoteDigest ? .localWins : .remoteWins }
+        return .equivalent
+    }
 }
 
 nonisolated struct SyncStatus: Equatable, Sendable {

@@ -74,10 +74,17 @@ enum SyncLibraryAuditor {
             let outcomes = await fingerprint(candidates)
             let counts = apply(outcomes, in: context)
 
-            journal.phaseRaw = counts.failed == 0 ? "complete" : "needsAttention"
+            let auditComplete = counts.failed == 0 && counts.missing == 0
+            journal.phaseRaw = auditComplete ? "complete" : "needsAttention"
             journal.lastProcessedEntityID = nil
-            journal.completedAt = counts.failed == 0 ? Date() : nil
-            journal.verificationError = counts.failed == 0 ? nil : "Some local assets could not be verified."
+            journal.completedAt = auditComplete ? Date() : nil
+            if counts.missing > 0 {
+                journal.verificationError = "Some local assets are missing."
+            } else if counts.failed > 0 {
+                journal.verificationError = "Some local assets could not be verified."
+            } else {
+                journal.verificationError = nil
+            }
             journal.updatedAt = Date()
             try context.save()
 

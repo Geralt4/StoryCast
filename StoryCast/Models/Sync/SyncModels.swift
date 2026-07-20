@@ -289,3 +289,67 @@ final class SyncMigrationJournal {
         self.updatedAt = updatedAt
     }
 }
+
+@Model
+final class SyncAccountBinding {
+    @Attribute(.unique) var id: String
+    var confirmedAccountIdentifier: String?
+    var pendingAccountIdentifier: String?
+    var boundGenerationID: String?
+    var stateRaw: String
+    var updatedAt: Date
+
+    init(id: String = "accountBinding", confirmedAccountIdentifier: String? = nil,
+         pendingAccountIdentifier: String? = nil, boundGenerationID: String? = nil,
+         stateRaw: String = "unbound", updatedAt: Date = Date()) {
+        self.id = id
+        self.confirmedAccountIdentifier = confirmedAccountIdentifier
+        self.pendingAccountIdentifier = pendingAccountIdentifier
+        self.boundGenerationID = boundGenerationID
+        self.stateRaw = stateRaw
+        self.updatedAt = updatedAt
+    }
+}
+
+@Model
+final class SyncCloudRecordState {
+    @Attribute(.unique) var recordName: String
+    var entityKindRaw: String
+    var recordSystemFields: Data
+    var updatedAt: Date
+
+    init(recordName: String, entityKindRaw: String, recordSystemFields: Data, updatedAt: Date = Date()) {
+        self.recordName = recordName
+        self.entityKindRaw = entityKindRaw
+        self.recordSystemFields = recordSystemFields
+        self.updatedAt = updatedAt
+    }
+}
+
+@Model
+final class SyncReplicaUploadMarker {
+    @Attribute(.unique) var id: String
+    var recordName: String
+    var reasonRaw: String
+    var createdAt: Date
+
+    init(id: String, recordName: String, reasonRaw: String, createdAt: Date = Date()) {
+        self.id = id
+        self.recordName = recordName
+        self.reasonRaw = reasonRaw
+        self.createdAt = createdAt
+    }
+}
+
+@Model
+final class SyncAssetRetentionState {
+    @Attribute(.unique) var id: String
+    var assetID: UUID
+    var prunedThroughRevision: Int64
+
+    init(assetID: UUID, prunedThroughRevision: Int64 = 0) {
+        self.id = assetID.uuidString.lowercased()
+        self.assetID = assetID
+        self.prunedThroughRevision = prunedThroughRevision
+    }
+}

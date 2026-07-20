@@ -20,6 +20,8 @@ enum SyncOutboxPlanner {
         let allFolders = try context.fetch(FetchDescriptor<Folder>())
         let allBooks = try context.fetch(FetchDescriptor<Book>())
         let allProgressHeads = try context.fetch(FetchDescriptor<SyncProgressHead>())
+        let uploadMarkers = try context.fetch(FetchDescriptor<SyncReplicaUploadMarker>())
+        let markedStateIDs = Set(uploadMarkers.map(\.id))
 
         var operationsBySubject = Dictionary(grouping: allOperations, by: \.subjectID)
         var statesByID = Dictionary(uniqueKeysWithValues: allStates.map { ($0.id, $0) })
@@ -69,8 +71,9 @@ enum SyncOutboxPlanner {
                 sortOrder: folder.sortOrder
             )
             let contentChanged = state.contentDigest != contentDigest
+            let forcedUpload = markedStateIDs.contains(stateID)
             let hasPending = hasPendingOperation(for: state.recordName, in: operationsBySubject)
-            guard contentChanged || hasPending else { continue }
+            guard contentChanged || hasPending || forcedUpload else { continue }
             if contentChanged {
                 state.revision = max(1, state.revision + 1)
                 state.modifiedAt = Date()
@@ -92,7 +95,7 @@ enum SyncOutboxPlanner {
                     deviceID: deviceID
                 ),
                 dependencies: generationDependencies,
-                replaceSent: contentChanged,
+                replaceSent: contentChanged || forcedUpload,
                 operationsBySubject: &operationsBySubject,
                 createdOperations: &createdOperations,
                 in: context
@@ -101,6 +104,7 @@ enum SyncOutboxPlanner {
         }
 
         var assetOperations: [UUID: SyncOutboxOperation] = [:]
+        var bookOperations: [UUID: SyncOutboxOperation] = [:]
         for asset in allAssets where
             eligibleBookIDs.contains(asset.bookID) &&
             asset.localStateRaw == SyncAssetLocalState.verified.rawValue {
@@ -123,7 +127,8 @@ enum SyncOutboxPlanner {
                     contentTypeIdentifier: asset.contentTypeIdentifier,
                     byteCount: asset.byteCount,
                     sha256Hex: asset.sha256Hex,
-                    readyAt: asset.lastVerifiedAt ?? Date()
+                    readyAt: asset.lastVerifiedAt ?? Date(),
+                    deviceID: deviceID
                 ),
                 dependencies: generationDependencies,
                 operationsBySubject: &operationsBySubject,
@@ -173,10 +178,13 @@ enum SyncOutboxPlanner {
                 duration: book.duration,
                 folderID: snapshot.folderID,
                 audioAssetID: audio.id,
+                audioAssetRevision: audio.contentRevision,
                 coverArtAssetID: cover?.id,
+                coverArtAssetRevision: cover?.contentRevision,
                 chapterSetID: book.id
             )
             let contentChanged = state.contentDigest != contentDigest
+            let forcedUpload = markedStateIDs.contains(stateID)
             let hasPending = hasPendingOperation(for: state.recordName, in: operationsBySubject)
             if contentChanged {
                 state.revision = max(1, state.revision + 1)
@@ -186,7 +194,7 @@ enum SyncOutboxPlanner {
             }
 
             let bookOperation: SyncOutboxOperation?
-            if contentChanged || hasPending {
+            if contentChanged || hasPending || forcedUpload {
                 bookOperation = try ensureOperation(
                     kind: .saveRecord,
                     subjectKind: .book,
@@ -199,13 +207,15 @@ enum SyncOutboxPlanner {
                         folderID: snapshot.folderID,
                         audioAssetID: audio.id,
                         coverArtAssetID: cover?.id,
+                        audioAssetRevision: audio.contentRevision,
+                        coverArtAssetRevision: cover?.contentRevision,
                         chapterSetID: book.id,
                         revision: state.revision,
                         modifiedAt: state.modifiedAt,
                         deviceID: deviceID
                     ),
                     dependencies: dependencies,
-                    replaceSent: contentChanged,
+                    replaceSent: contentChanged || forcedUpload,
                     operationsBySubject: &operationsBySubject,
                     createdOperations: &createdOperations,
                     in: context
@@ -213,6 +223,7 @@ enum SyncOutboxPlanner {
             } else {
                 bookOperation = nil
             }
+            if let bookOperation { bookOperations[book.id] = bookOperation }
             let chapters = book.chapters.sorted {
                 if $0.startTime != $1.startTime { return $0.startTime < $1.startTime }
                 return $0.title < $1.title
@@ -238,8 +249,9 @@ enum SyncOutboxPlanner {
                     sourceRaw: chapter.source.rawValue
                 )
                 let chapterChanged = chapterState.contentDigest != chapterDigest
+                let forcedChapterUpload = markedStateIDs.contains(chapterStateID)
                 let chapterHasPending = hasPendingOperation(for: chapterState.recordName, in: operationsBySubject)
-                guard chapterChanged || chapterHasPending else { continue }
+                guard chapterChanged || chapterHasPending || forcedChapterUpload else { continue }
                 if chapterChanged {
                     chapterState.revision = max(1, chapterState.revision + 1)
                     chapterState.modifiedAt = Date()
@@ -263,7 +275,7 @@ enum SyncOutboxPlanner {
                         deviceID: deviceID
                     ),
                     dependencies: dependencyIfPending(bookOperation),
-                    replaceSent: chapterChanged,
+                    replaceSent: chapterChanged || forcedChapterUpload,
                     operationsBySubject: &operationsBySubject,
                     createdOperations: &createdOperations,
                     in: context
@@ -307,6 +319,29 @@ enum SyncOutboxPlanner {
             }
         }
 
+        let retentionStates = try context.fetch(FetchDescriptor<SyncAssetRetentionState>())
+        var retentionByAsset = Dictionary(uniqueKeysWithValues: retentionStates.map { ($0.assetID, $0) })
+        for asset in allAssets where asset.contentRevision > 1 {
+            let retention = retentionByAsset[asset.id] ?? {
+                let value = SyncAssetRetentionState(assetID: asset.id)
+                retentionByAsset[asset.id] = value
+                context.insert(value)
+                return value
+            }()
+            guard retention.prunedThroughRevision < asset.contentRevision - 1 else { continue }
+            var dependencies = dependencyIfPending(assetOperations[asset.id])
+            dependencies.append(contentsOf: dependencyIfPending(bookOperations[asset.bookID]))
+            for revision in (retention.prunedThroughRevision + 1)..<asset.contentRevision {
+                _ = try ensureOperation(
+                    kind: .deleteAsset, subjectKind: .asset,
+                    subjectID: SyncRecordName.asset(asset.id, revision: revision),
+                    payload: CloudSyncAssetDeletionPayload(assetID: asset.id, revision: revision),
+                    dependencies: dependencies, operationsBySubject: &operationsBySubject,
+                    createdOperations: &createdOperations, in: context
+                )
+            }
+        }
+
         runtime.updatedAt = Date()
         try context.save()
         return SyncOutboxPlanResult(bookCount: books.count, operationCount: createdOperations.count)
@@ -323,7 +358,9 @@ enum SyncOutboxPlanner {
         createdOperations: inout [SyncOutboxOperation],
         in context: ModelContext
     ) throws -> SyncOutboxOperation {
-        if let pending = operationsBySubject[subjectID]?.first(where: { $0.stateRaw != "sent" }) {
+        if let pending = operationsBySubject[subjectID]?.first(where: {
+            $0.kindRaw == kind.rawValue && $0.stateRaw != "sent"
+        }) {
             pending.payloadData = try CloudSyncRecordCodec.encodePayload(payload)
             pending.dependencyData = try SyncOutboxDependencyCodec.encode(Array(Set(dependencies)))
             pending.stateRaw = "queued"
@@ -331,7 +368,9 @@ enum SyncOutboxPlanner {
             pending.lastErrorMessage = nil
             return pending
         }
-        if !replaceSent, let sent = operationsBySubject[subjectID]?.first(where: { $0.stateRaw == "sent" }) {
+        if !replaceSent, let sent = operationsBySubject[subjectID]?.first(where: {
+            $0.kindRaw == kind.rawValue && $0.stateRaw == "sent"
+        }) {
             return sent
         }
         let operation = try SyncOutboxStore.upsert(
