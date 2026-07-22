@@ -41,20 +41,46 @@ final class RemoteLibraryUICoverArtCoordinator {
         didSet { onFailuresChanged?(failures) }
     }
 
-    private var tasks: [UUID: Task<Void, Never>] = [:]
+    /// Maps a bookId to the currently-tracked task along with the
+    /// "generation" (monotonic counter) of the task that installed the entry.
+    /// We use a generation counter instead of `Task` identity because `Task`
+    /// is a value type in Swift 6, so reference equality (`===`) doesn't work.
+    /// Every time we install a new task (whether via `enqueue`, `retry…`, or
+    /// the inner retry-after-failure path) the counter is bumped, and the
+    /// cleanup code only removes the entry if the current generation still
+    /// matches the one the task captured at install time.
+    private struct TaskSlot {
+        var task: Task<Void, Never>
+        var generation: UInt64
+    }
+    private var tasks: [UUID: TaskSlot] = [:]
+    private var nextGeneration: UInt64 = 0
 
     private init() {}
 
     func enqueue(requests: [RemoteCoverArtRequest], container: ModelContainer) {
         for request in requests {
             let bookId = request.bookId
-            tasks[bookId]?.cancel()
-            tasks[bookId] = Task(priority: .utility) {
-                await self.downloadAndSaveCoverArt(request: request, container: container)
-                _ = await MainActor.run {
-                    self.tasks.removeValue(forKey: bookId)
+            tasks[bookId]?.task.cancel()
+            let generation = allocateGeneration(for: bookId)
+            let task = Task(priority: .utility) { [weak self] in
+                await self?.downloadAndSaveCoverArt(
+                    request: request,
+                    container: container,
+                    bookId: bookId
+                )
+                // Only clear the entry if it's still the generation we
+                // installed. The error handler may have installed a newer
+                // (retry) task under the same bookId — in that case we
+                // must not evict it.
+                await MainActor.run {
+                    guard let self else { return }
+                    if let slot = self.tasks[bookId], slot.generation == generation {
+                        self.tasks.removeValue(forKey: bookId)
+                    }
                 }
             }
+            tasks[bookId] = TaskSlot(task: task, generation: generation)
         }
     }
 
@@ -73,13 +99,22 @@ final class RemoteLibraryUICoverArtCoordinator {
             serverURL: server.normalizedURL
         )
 
-        tasks[bookId]?.cancel()
-        tasks[bookId] = Task(priority: .utility) {
-            await self.downloadAndSaveCoverArt(request: request, container: container)
-            _ = await MainActor.run {
-                self.tasks.removeValue(forKey: bookId)
+        tasks[bookId]?.task.cancel()
+        let generation = allocateGeneration(for: bookId)
+        let task = Task(priority: .utility) { [weak self] in
+            await self?.downloadAndSaveCoverArt(
+                request: request,
+                container: container,
+                bookId: bookId
+            )
+            await MainActor.run {
+                guard let self else { return }
+                if let slot = self.tasks[bookId], slot.generation == generation {
+                    self.tasks.removeValue(forKey: bookId)
+                }
             }
         }
+        tasks[bookId] = TaskSlot(task: task, generation: generation)
     }
 
     func retryAllCoverArtDownloads(activeServer: ABSServer?, container: ModelContainer) {
@@ -95,8 +130,10 @@ final class RemoteLibraryUICoverArtCoordinator {
     }
 
     func cancelAllCoverArtDownloads() {
-        for task in tasks.values {
-            task.cancel()
+        // Snapshot the values before mutating the dict to avoid undefined
+        // behavior from mutating-while-iterating.
+        for slot in Array(tasks.values) {
+            slot.task.cancel()
         }
         tasks.removeAll()
         AppLogger.network.debug("Cancelled all cover art download tasks")
@@ -104,8 +141,8 @@ final class RemoteLibraryUICoverArtCoordinator {
 
     func cancelCoverArtDownloads(for bookIds: Set<UUID>) {
         for bookId in bookIds {
-            if let task = tasks.removeValue(forKey: bookId) {
-                task.cancel()
+            if let slot = tasks.removeValue(forKey: bookId) {
+                slot.task.cancel()
             }
         }
 
@@ -114,7 +151,19 @@ final class RemoteLibraryUICoverArtCoordinator {
         }
     }
 
-    private func downloadAndSaveCoverArt(request: RemoteCoverArtRequest, container: ModelContainer) async {
+    /// Allocates a fresh generation number and bumps the global counter.
+    /// Wrapping the counter in a helper keeps the bookkeeping consistent
+    /// at every call site that installs a task.
+    private func allocateGeneration(for bookId: UUID) -> UInt64 {
+        nextGeneration &+= 1
+        return nextGeneration
+    }
+
+    private func downloadAndSaveCoverArt(
+        request: RemoteCoverArtRequest,
+        container: ModelContainer,
+        bookId: UUID
+    ) async {
         let compoundKey = "\(request.serverId.uuidString)_\(request.bookId.uuidString)"
 
         guard !Task.isCancelled else { return }
@@ -131,7 +180,7 @@ final class RemoteLibraryUICoverArtCoordinator {
             _ = await MainActor.run {
                 self.failures.removeValue(forKey: compoundKey)
             }
-        } catch where Task.isCancelled {
+        } catch is CancellationError {
             return
         } catch {
             AppLogger.network.debug("Cover art download failed for \(request.itemId, privacy: .private): \(error.localizedDescription, privacy: .private)")
@@ -148,21 +197,34 @@ final class RemoteLibraryUICoverArtCoordinator {
                 )
                 self.failures[compoundKey] = failure
 
-                if !failure.isExhausted {
-                    let delay = failure.backoffDelay
-                    let bookId = request.bookId
-                    self.tasks[bookId]?.cancel()
-                    self.tasks[bookId] = Task(priority: .utility) {
-                        do {
-                            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                            try Task.checkCancellation()
-                        } catch {
-                            return
+                guard !failure.isExhausted else { return }
+                let delay = failure.backoffDelay
+                let request = request
+                let container = container
+                // Install a retry task. We allocate a fresh generation so
+                // the outer task (whose captured generation is now stale)
+                // will not evict the retry task when it completes.
+                let generation = self.allocateGeneration(for: request.bookId)
+                let task = Task(priority: .utility) { [weak self] in
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        try Task.checkCancellation()
+                    } catch {
+                        return
+                    }
+                    await self?.downloadAndSaveCoverArt(
+                        request: request,
+                        container: container,
+                        bookId: bookId
+                    )
+                    await MainActor.run {
+                        guard let self else { return }
+                        if let slot = self.tasks[bookId], slot.generation == generation {
+                            self.tasks.removeValue(forKey: bookId)
                         }
-                        await self.downloadAndSaveCoverArt(request: request, container: container)
-                        _ = await MainActor.run { self.tasks.removeValue(forKey: bookId) }
                     }
                 }
+                self.tasks[bookId] = TaskSlot(task: task, generation: generation)
             }
         }
     }
@@ -171,7 +233,7 @@ final class RemoteLibraryUICoverArtCoordinator {
     var debugTaskCount: Int { tasks.count }
 
     func debugRegisterTask(_ task: Task<Void, Never>, for bookId: UUID) {
-        tasks[bookId] = task
+        tasks[bookId] = TaskSlot(task: task, generation: allocateGeneration(for: bookId))
     }
 
     func debugRecordFailure(

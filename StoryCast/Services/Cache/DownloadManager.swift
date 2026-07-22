@@ -38,7 +38,15 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
     func downloadBook(_ book: Book, server: ABSServer, container: ModelContainer) async throws {
         guard book.isRemote, let itemId = book.remoteItemId else { return }
         guard let token = await AudiobookshelfAuth.shared.token(for: server.normalizedURL) else { throw APIError.tokenMissing }
-        modelContainers[book.id] = container
+        // Defer the container registration until AFTER the network calls
+        // succeed, so an early throw (e.g. network unreachable) doesn't
+        // leak a dict entry that only the task completion path cleans up.
+        var didRegisterContainer = false
+        defer {
+            if !didRegisterContainer {
+                modelContainers.removeValue(forKey: book.id)
+            }
+        }
 
         let item = try await AudiobookshelfAPI.shared.fetchLibraryItem(baseURL: server.normalizedURL, token: token, itemId: itemId)
         guard let firstTrack = item.media.tracks?.first, let contentUrl = firstTrack.contentUrl else { throw APIError.invalidResponse }
@@ -49,6 +57,12 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
 
         let bookId = book.id
         let fileExtension = DownloadManager.extractFileExtension(from: contentUrl)
+        // Now that the network prerequisites succeeded, register the
+        // container so the URLSession download delegate can look it up.
+        // Already on the main actor (the enclosing class is @MainActor).
+        modelContainers[book.id] = container
+        didRegisterContainer = true
+
         downloads[bookId] = DownloadState(bookId: bookId, progress: 0, status: .queued)
         resumedContinuations.remove(bookId)
         cancelTimeoutTask(for: bookId)
@@ -252,9 +266,11 @@ extension DownloadManager: URLSessionDownloadDelegate {
     nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            for (identifier, completionHandler) in self.backgroundCompletionHandlers {
+            // Snapshot the keys before mutating the dict to avoid undefined
+            // behavior from mutating-while-iterating.
+            for identifier in Array(self.backgroundCompletionHandlers.keys) {
+                guard let completionHandler = self.backgroundCompletionHandlers.removeValue(forKey: identifier) else { continue }
                 AppLogger.sync.info("All background tasks finished for session \(identifier, privacy: .private) — calling system completion handler")
-                self.backgroundCompletionHandlers.removeValue(forKey: identifier)
                 completionHandler()
             }
         }

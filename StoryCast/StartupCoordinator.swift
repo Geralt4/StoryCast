@@ -29,6 +29,13 @@ final class StartupCoordinator: ObservableObject {
 
     func retry(container: ModelContainer) async {
         loadError = nil
+        // If a startup is already running, wait for it to finish before
+        // starting a new one. Previously `runStartup` would silently
+        // no-op when `startupTask != nil`, leaving the user with no
+        // feedback if they tapped "Retry" while startup was in flight.
+        if let existing = startupTask {
+            _ = await existing.value
+        }
         await runStartup(container: container)
     }
 

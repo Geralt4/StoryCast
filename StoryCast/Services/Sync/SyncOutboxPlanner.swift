@@ -31,8 +31,17 @@ enum SyncOutboxPlanner {
         }
         let eligibleBookIDs = Set(books.map { $0.0.id })
 
-        let generationID = UUID(uuidString: runtime.generationID ?? "") ?? UUID()
-        runtime.generationID = generationID.uuidString.lowercased()
+        // Reuse the existing generationID if we have one. Generating a new
+        // UUID on every plan() would cause the generation record to be
+        // re-uploaded indefinitely, wasting CloudKit quota and triggering
+        // unnecessary inbox re-applies on every other device.
+        let generationID: UUID
+        if let existing = runtime.generationID, let parsed = UUID(uuidString: existing) {
+            generationID = parsed
+        } else {
+            generationID = UUID()
+            runtime.generationID = generationID.uuidString.lowercased()
+        }
         let generationRecordName = SyncRecordName.generation()
         var createdOperations: [SyncOutboxOperation] = []
 

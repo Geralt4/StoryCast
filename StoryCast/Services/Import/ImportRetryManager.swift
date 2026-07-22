@@ -118,7 +118,12 @@ final class ImportRetryManager {
         guard failedImport.canAutoRetry else { return }
 
         let attemptNumber = failedImport.retryCount + 1
-        let delay = pow(2.0, Double(failedImport.retryCount))
+        // Cap the exponential-backoff delay. With the current maxRetries of 3
+        // the value is bounded to ~4 seconds, but if a future change raises
+        // the retry limit, `pow(2, retryCount) * 1e9` would silently overflow
+        // UInt64 around retryCount=34. Cap at 1 hour as a safety net.
+        let rawDelay = pow(2.0, Double(failedImport.retryCount))
+        let delay = min(rawDelay, 3600.0)
 
         let task = Task { @MainActor [weak self] in
             guard let self else { return }

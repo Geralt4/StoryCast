@@ -355,7 +355,7 @@ extension AudioPlayerService: AudioSessionDelegate {
                 self.updatePlaybackState()
                 self.updatePlaybackRate()
                 // Save position to prevent data loss if app terminates during interruption
-                NotificationCenter.default.post(name: .init("StoryCast.SavePlaybackPosition"), object: nil)
+                NotificationCenter.default.post(name: .savePlaybackPosition, object: nil)
                 AppLogger.playback.info("Paused due to audio interruption")
             }
         }

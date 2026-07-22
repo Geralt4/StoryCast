@@ -23,4 +23,12 @@ enum AudiobookshelfDefaults {
 extension Notification.Name {
     /// Posted when the Audiobookshelf token expires and needs re-authentication.
     nonisolated static let audiobookshelfTokenExpired = Notification.Name("audiobookshelfTokenExpired")
+
+    /// Posted when a WiFi→cellular (or other) network transition causes
+    /// playback reconnection to fail. User info: `["error": Error]`.
+    nonisolated static let storyCastReconnectionFailed = Notification.Name("StoryCast.ReconnectionFailed")
+
+    /// Posted by `AudioPlayerService` to request a save of the current
+    /// playback position. Handled by `StoryCastApp`.
+    nonisolated static let savePlaybackPosition = Notification.Name("StoryCast.SavePlaybackPosition")
 }

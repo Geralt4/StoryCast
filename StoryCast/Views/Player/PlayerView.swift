@@ -110,6 +110,12 @@ struct PlayerView: View {
             viewModel.onDisappear()
         }
         .onReceive(audioPlayer.$currentTime) { newValue in
+            // The audio player is a shared singleton. If a new book has been
+            // loaded (e.g. during a route transition), its currentTime
+            // changes would briefly leak into the slider for the previous
+            // book. Only update the slider for the book actually being
+            // shown.
+            guard viewModel.isCurrentBookLoaded() || !viewModel.usesRemoteStreaming else { return }
             if !isUserDraggingSlider {
                 sliderValue = min(max(newValue, 0), max(viewModel.safeDuration, MathDefaults.minDurationSafetyValue))
             }
