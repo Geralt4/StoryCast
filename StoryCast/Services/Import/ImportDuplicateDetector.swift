@@ -7,7 +7,11 @@ import os
 final class ImportDuplicateDetector {
     static let shared = ImportDuplicateDetector()
 
-    private let libraryURL = StorageManager.shared.storyCastLibraryURL
+    /// Resolved on every read so the URL is always current. A captured `let`
+    /// would go stale if the library directory is ever recreated (e.g. by a
+    /// storage migration or recovery flow), causing duplicate detection to
+    /// look in the wrong directory and every import to appear unique.
+    private var libraryURL: URL { StorageManager.shared.storyCastLibraryURL }
 
     private init() {}
 

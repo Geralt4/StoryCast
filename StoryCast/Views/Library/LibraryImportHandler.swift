@@ -42,33 +42,46 @@ final class LibraryImportHandler {
     ///   - modelContext: The model context for database operations
     func importFiles(_ urls: [URL], to folder: Folder, importService: ImportService, modelContext: ModelContext) {
         importTask?.cancel()
-        
+
         importTask = Task {
             await importService.importFilesToFolder(
                 urls: urls,
                 folderId: folder.id,
                 container: modelContext.container
             )
-            
+
             guard !Task.isCancelled else { return }
+
+            // Snapshot the result counters IMMEDIATELY after import completes.
+            // `synchronizeIfEnabled` is an `await` point — if a new import
+            // starts on the main actor while we wait (or if `importService`
+            // clears/overwrites its counters in the meantime), reading them
+            // later would show the wrong numbers to the user.
+            let failedCount = importService.importErrors.count
+            let skippedCount = importService.skippedDuplicateFileNames.count
+            let importedCount = importService.completedFiles
 
             await SyncController.shared.synchronizeIfEnabled(
                 container: modelContext.container,
                 auditLibrary: true
             )
-            
-            presentImportResult(importService: importService)
+
+            guard !Task.isCancelled else { return }
+            presentImportResult(failed: failedCount, skipped: skippedCount, imported: importedCount)
         }
     }
-    
+
     /// Presents the import result, showing errors if any occurred.
     ///
-    /// - Parameter importService: The import service to check for results.
-    func presentImportResult(importService: ImportService) {
-        let failedCount = importService.importErrors.count
-        let skippedCount = importService.skippedDuplicateFileNames.count
-        let importedCount = importService.completedFiles
-        
+    /// - Parameters:
+    ///   - failed: Number of files that failed to import
+    ///   - skipped: Number of files skipped as duplicates
+    ///   - imported: Number of files successfully imported
+    func presentImportResult(failed: Int, skipped: Int, imported: Int) {
+        let failedCount = failed
+        let skippedCount = skipped
+        let importedCount = imported
+
         if failedCount > 0 {
             importErrorMessage = "Failed to import \(failedCount) files."
             if skippedCount > 0 {
@@ -78,7 +91,7 @@ final class LibraryImportHandler {
             showImportError = true
             return
         }
-        
+
         if skippedCount > 0 {
             if importedCount > 0 {
                 let importedSuffix = importedCount == 1 ? "file" : "files"

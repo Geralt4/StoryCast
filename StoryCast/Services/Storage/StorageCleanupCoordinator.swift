@@ -23,6 +23,14 @@ enum StorageCleanupCoordinator {
               !relativePath.unicodeScalars.contains("\u{0000}") else {
             return false
         }
+        // Normalize to NFKC and re-validate. This blocks Unicode normalization
+        // tricks like full-width dots (U+FF0E) that decode to "." / ".."
+        // after filesystem or URL-component normalization, which could
+        // otherwise slip past the literal "." / ".." check above.
+        let normalized = relativePath.precomposedStringWithCompatibilityMapping
+        guard normalized == relativePath else {
+            return false
+        }
         return true
     }
 

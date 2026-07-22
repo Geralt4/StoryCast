@@ -34,6 +34,7 @@ final class PlayerViewModel {
     private var coverArtTask: Task<Void, Never>?
     private var chapterExtractionTask: Task<Void, Never>?
     private var remotePlaybackTask: Task<Void, Never>?
+    private var localPlaybackTask: Task<Void, Never>?
     private var playbackSaveErrorTask: Task<Void, Never>?
     private var debouncedSaveTask: Task<Void, Never>?
     private var periodicSaveTimer: Timer?
@@ -171,7 +172,11 @@ final class PlayerViewModel {
             } else {
                 // audioURL is always non-nil for local books
                 guard let localAudioURL = audioURL else { return }
-                Task { @MainActor in
+                // Store the task so onDisappear can cancel it; otherwise a
+                // quick route change can leave the load running, eventually
+                // racing with a new book being loaded.
+                localPlaybackTask?.cancel()
+                localPlaybackTask = Task { @MainActor in
                     await loadLocalAudio(localAudioURL)
                 }
             }
@@ -232,6 +237,7 @@ final class PlayerViewModel {
         chapterExtractionTask?.cancel()
         playbackSaveErrorTask?.cancel()
         remotePlaybackTask?.cancel()
+        localPlaybackTask?.cancel()
         periodicSaveTimer?.invalidate()
         periodicSaveTimer = nil
         clearChapterPlaybackSession()
@@ -371,7 +377,7 @@ final class PlayerViewModel {
         }
     }
 
-    private func isCurrentBookLoaded(expectedURL: URL? = nil) -> Bool {
+    func isCurrentBookLoaded(expectedURL: URL? = nil) -> Bool {
         if usesRemoteStreaming {
             return sessionManager.isCurrentSession(for: book)
         }
@@ -601,15 +607,22 @@ final class PlayerViewModel {
             return lastChapter
         }
 
-        return nil
+        // Fall back to the first chapter if time is before any chapter starts
+        // (e.g. the very beginning of a book whose first chapter doesn't
+        // start at 0). Without this, no chapter is shown until the user
+        // crosses into the first chapter.
+        return sortedChapters.first
     }
     
     // MARK: - Periodic Save Timer
     
     private func startPeriodicSaveTimer() {
         periodicSaveTimer?.invalidate()
-        periodicSaveTimer = Timer.scheduledTimer(
-            withTimeInterval: PerformanceDefaults.periodicPlaybackSaveInterval,
+        // Use `.common` run-loop mode so the timer keeps firing while the
+        // user is scrolling or interacting with tracking-mode UI elements.
+        // `.default` (the default for scheduledTimer) pauses during scroll.
+        periodicSaveTimer = Timer(
+            timeInterval: PerformanceDefaults.periodicPlaybackSaveInterval,
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -617,7 +630,7 @@ final class PlayerViewModel {
                 // Only save if position has changed significantly
                 let currentTime = audioPlayer.currentTime
                 guard abs(currentTime - lastSavedPosition) > 1.0 else { return }
-                
+
                 // Force save without error UI (silent save for periodic)
                 assertModelContextConfigured()
                 book.lastPlaybackPosition = currentTime
@@ -632,6 +645,9 @@ final class PlayerViewModel {
                     backupPositionToUserDefaults(currentTime)
                 }
             }
+        }
+        if let timer = periodicSaveTimer {
+            RunLoop.main.add(timer, forMode: .common)
         }
     }
     

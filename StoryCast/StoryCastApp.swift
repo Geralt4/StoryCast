@@ -93,7 +93,6 @@ struct StoryCastApp: App {
         } catch {
             AppLogger.app.critical("fatalFallbackContainer creation failed: \(error)")
             let unrecoverable = StorageUnrecoverableError(message: "Unable to create a minimal in-memory container. Your device may be out of memory.")
-            let state = StorageBootstrapState.unrecoverable(unrecoverable)
             fatalError("StoryCast could not start: \(unrecoverable.message)")
         }
     }()
@@ -115,7 +114,7 @@ struct StoryCastApp: App {
                         saveCurrentPlaybackPosition()
                     }
                 }
-                .onReceive(NotificationCenter.default.publisher(for: .init("StoryCast.SavePlaybackPosition"))) { _ in
+                .onReceive(NotificationCenter.default.publisher(for: .savePlaybackPosition)) { _ in
                     saveCurrentPlaybackPosition()
                 }
 
@@ -155,7 +154,10 @@ struct StoryCastApp: App {
             }
 
             let fileName = currentURL.lastPathComponent
-            let isRemoteCache = currentURL.deletingLastPathComponent() == StorageManager.shared.remoteAudioCacheDirectoryURL
+            // Standardize both URLs so path differences (trailing slashes,
+            // symlink resolution) don't cause a false mismatch.
+            let isRemoteCache = currentURL.deletingLastPathComponent().standardizedFileURL
+                == StorageManager.shared.remoteAudioCacheDirectoryURL.standardizedFileURL
             var descriptor = FetchDescriptor<Book>(predicate: #Predicate { book in
                 isRemoteCache ? book.localCachePath == fileName : book.localFileName == fileName
             })
@@ -184,14 +186,21 @@ struct StoryCastApp: App {
                 // Remote books use ProgressBackupStore, skip here
                 return
             }
+            // Roll back the failed context before doing any further fetches:
+            // the context may hold uncommitted mutations from the previous
+            // (failed) save that would otherwise influence the next fetch.
+            context.rollback()
             // For local books, backup to UserDefaults
             let fileName = currentURL.lastPathComponent
-            let isRemoteCache = currentURL.deletingLastPathComponent() == StorageManager.shared.remoteAudioCacheDirectoryURL
+            // Standardize both URLs so path differences (trailing slashes,
+            // symlink resolution) don't cause a false mismatch.
+            let isRemoteCache = currentURL.deletingLastPathComponent().standardizedFileURL
+                == StorageManager.shared.remoteAudioCacheDirectoryURL.standardizedFileURL
             var descriptor = FetchDescriptor<Book>(predicate: #Predicate { book in
                 isRemoteCache ? book.localCachePath == fileName : book.localFileName == fileName
             })
             descriptor.fetchLimit = 1
-            
+
             if let book = try? context.fetch(descriptor).first {
                 let backupKey = "localBookPosition_\(book.id.uuidString)"
                 let backup: [String: Any] = [

@@ -18,9 +18,10 @@ struct ChapterListView: View {
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var audioPlayer = AudioPlayerService.shared
 
-    private var sortedChapters: [Chapter] {
-        book.chapters.sorted { $0.startTime < $1.startTime }
-    }
+    /// Cached so we don't re-sort the chapter list on every body access
+    /// (which happens for each row during scroll). Updated whenever the
+    /// underlying chapter list changes.
+    @State private var sortedChapters: [Chapter] = []
 
     var body: some View {
         NavigationStack {
@@ -67,6 +68,12 @@ struct ChapterListView: View {
                 }
             }
         }
+        .onAppear { refreshSortedChapters() }
+        .onChange(of: book.chapters.count) { _, _ in refreshSortedChapters() }
+    }
+
+    private func refreshSortedChapters() {
+        sortedChapters = book.chapters.sorted { $0.startTime < $1.startTime }
     }
 
     private func selectChapter(_ chapter: Chapter) {

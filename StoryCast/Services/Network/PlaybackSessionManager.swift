@@ -202,28 +202,39 @@ private extension PlaybackSessionManager {
             AppLogger.sync.debug("Network transitioned but player is paused — no reconnection needed")
             return
         }
-        
+
         let currentPosition = AudioPlayerService.shared.currentTime
+        // Capture the duration BEFORE closeCurrentSession() runs, because
+        // clearSession() zeros sessionDuration. If reconnectSession later
+        // receives a session without a server-side duration, we fall back
+        // to this value instead of 0 (which would cause every progress
+        // sync to send duration: 0 to the server).
+        let previousDuration = sessionDuration
         AppLogger.sync.info("Network transitioned to \(isExpensive ? "cellular" : "WiFi") — attempting reconnection")
-        
+
         await closeCurrentSession()
-        
+
         do {
-            let stream = try await reconnectSession(server: server, itemId: itemId, resumePosition: currentPosition)
-            AudioPlayerService.shared.loadAuthenticatedAudio(stream: stream, title: AudioPlayerService.shared.currentURL?.lastPathComponent ?? "Unknown", duration: sessionDuration, seekTo: currentPosition)
+            let stream = try await reconnectSession(
+                server: server,
+                itemId: itemId,
+                resumePosition: currentPosition,
+                fallbackDuration: previousDuration
+            )
+            AudioPlayerService.shared.loadAuthenticatedAudio(stream: stream, title: AudioPlayerService.shared.currentURL?.lastPathComponent ?? "Unknown", duration: previousDuration, seekTo: currentPosition)
             AudioPlayerService.shared.play()
             AppLogger.sync.info("Successfully reconnected after network transition")
         } catch {
             AppLogger.sync.error("Failed to reconnect after network transition: \(error.localizedDescription, privacy: .private)")
             // Notify the user that reconnection failed
-            NotificationCenter.default.post(name: .init("StoryCast.ReconnectionFailed"), object: nil, userInfo: ["error": error])
+            NotificationCenter.default.post(name: .storyCastReconnectionFailed, object: nil, userInfo: ["error": error])
         }
     }
-    
-    func reconnectSession(server: ABSServer, itemId: String, resumePosition: Double) async throws -> AuthenticatedStream {
+
+    func reconnectSession(server: ABSServer, itemId: String, resumePosition: Double, fallbackDuration: TimeInterval) async throws -> AuthenticatedStream {
         let (session, stream) = try await openSession(server: server, itemId: itemId)
         configureSessionState(session: session, server: server, itemId: itemId,
-                              duration: session.duration ?? sessionDuration,
+                              duration: session.duration ?? fallbackDuration,
                               startTime: session.currentTime ?? resumePosition)
         startSyncTimer()
         AppLogger.sync.info("Session \(session.id, privacy: .private) reconnected")

@@ -23,9 +23,6 @@ final class RemoteCommandHandler {
     weak var delegate: RemoteCommandDelegate?
     var isPlaying: Bool = false
     private var isConfigured = false
-    private var nowPlayingTitle: String = ""
-    private var nowPlayingDuration: Double = 0.0
-    private var nowPlayingArtwork: UIImage?
     #else
     private var isConfigured = false
     #endif
@@ -89,10 +86,6 @@ final class RemoteCommandHandler {
     
     #if os(iOS)
     func updateNowPlayingInfo(title: String, duration: Double, currentTime: Double, artwork: UIImage? = nil) {
-        nowPlayingTitle = title
-        nowPlayingDuration = duration
-        nowPlayingArtwork = artwork
-        
         var nowPlayingInfo: [String: Any] = [
             MPMediaItemPropertyTitle: title.isEmpty ? "StoryCast" : title,
             MPMediaItemPropertyPlaybackDuration: duration,
