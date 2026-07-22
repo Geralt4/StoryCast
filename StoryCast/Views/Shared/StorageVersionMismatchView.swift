@@ -3,7 +3,6 @@ import SwiftUI
 /// View displayed when a schema version mismatch is detected
 struct StorageVersionMismatchView: View {
     let error: StorageVersionError
-    let onRecoveryComplete: (StorageBootstrapState) -> Void
     
     @State private var recoveryState: RecoveryState = .idle
     @State private var backupURL: URL?
@@ -64,7 +63,7 @@ struct StorageVersionMismatchView: View {
         
         VStack(spacing: 12) {
             Button(action: startRecovery) {
-                Text("Recover Library")
+                Text("Create New Library")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
             }
@@ -96,11 +95,11 @@ struct StorageVersionMismatchView: View {
             .scaleEffect(1.5)
             .padding()
         
-        Text("Recovering Library...")
+        Text("Creating New Library...")
             .font(.title2)
             .fontWeight(.bold)
         
-        Text("Please wait while we backup your data and create a new library.")
+        Text("Please wait while we preserve a backup and create a new empty library.")
             .font(.body)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 32)
@@ -113,11 +112,11 @@ struct StorageVersionMismatchView: View {
             .font(.system(size: 60))
             .foregroundStyle(.green)
         
-        Text("Recovery Complete")
+        Text("New Library Created")
             .font(.title)
             .fontWeight(.bold)
         
-        Text("Your library has been recovered successfully.")
+        Text("A new empty library is ready. Your previous database backup is preserved below.")
             .font(.body)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 32)
@@ -187,28 +186,21 @@ struct StorageVersionMismatchView: View {
         recoveryState = .inProgress
         
         Task {
-            let state = await AppBootstrap.startFresh()
-            
-            // Store backup URL for display
-            backupURL = StorageBackupManager.listBackups().first
-            
-            switch state {
-            case .ready:
+            let outcome = await AppBootstrap.startFresh()
+
+            switch outcome {
+            case .restartRequired(let createdBackupURL):
+                backupURL = createdBackupURL
                 recoveryState = .success
-            case .unrecoverable(let error):
+            case .failed(let error):
                 recoveryState = .failed(message: error.localizedDescription)
-            default:
-                recoveryState = .failed(message: "An unexpected error occurred")
             }
-            
-            onRecoveryComplete(state)
         }
     }
 }
 
 #Preview {
     StorageVersionMismatchView(
-        error: .versionMismatchDetected(details: "Schema version mismatch"),
-        onRecoveryComplete: { _ in }
+        error: .versionMismatchDetected(details: "Schema version mismatch")
     )
 }

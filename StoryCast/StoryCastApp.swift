@@ -30,12 +30,7 @@ struct StoryCastApp: App {
                 sharedModelContainer = Self.fatalFallbackContainer
             }
         case .versionMismatch(let error):
-            // First try to create a persistent container from backup (preserves user data)
-            if let persistentContainer = AppBootstrap.makePersistentRecoveryContainer() {
-                storageBootstrapState = .versionMismatch(error)
-                sharedModelContainer = persistentContainer
-            } else if let recoveryContainer = AppBootstrap.makeRecoveryContainer() {
-                // Fall back to in-memory container if persistent recovery fails
+            if let recoveryContainer = AppBootstrap.makeRecoveryContainer() {
                 storageBootstrapState = .versionMismatch(error)
                 sharedModelContainer = recoveryContainer
             } else if let container = Self.lastResortContainer {
@@ -47,7 +42,7 @@ struct StoryCastApp: App {
             }
         case .unrecoverable(let error):
             storageBootstrapState = .unrecoverable(error)
-            let schema = Schema(versionedSchema: SchemaV5.self)
+            let schema = Schema(versionedSchema: SchemaV6.self)
             let config = ModelConfiguration(
                 schema: schema,
                 isStoredInMemoryOnly: true,
@@ -64,7 +59,7 @@ struct StoryCastApp: App {
     }
 
     private nonisolated static var lastResortContainer: ModelContainer? {
-        let schema = Schema(versionedSchema: SchemaV5.self)
+        let schema = Schema(versionedSchema: SchemaV6.self)
         let config = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true,
@@ -87,7 +82,7 @@ struct StoryCastApp: App {
     }
     
     private static let fatalFallbackContainer: ModelContainer = {
-        let schema = Schema(versionedSchema: SchemaV5.self)
+        let schema = Schema(versionedSchema: SchemaV6.self)
         let config = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true,
@@ -115,31 +110,9 @@ struct StoryCastApp: App {
             ContentView(storageBootstrapState: storageBootstrapState)
                 .preferredColorScheme(appearanceColorScheme)
                 .environmentObject(ImportService.shared)
-                .onOpenURL { url in
-                    guard case .ready = storageBootstrapState else {
-                        AppLogger.app.error("Blocked file import while storage recovery mode is active")
-                        return
-                    }
-
-                    Task {
-                        do {
-                            try await ImportService.shared.importFile(url: url, container: sharedModelContainer)
-                            await SyncController.shared.synchronizeIfEnabled(
-                                container: sharedModelContainer,
-                                auditLibrary: true
-                            )
-                        } catch {
-                            AppLogger.app.error("Failed to import file from URL: \(error.localizedDescription, privacy: .private)")
-                        }
-                    }
-                }
                 .onChange(of: scenePhase) { _, newPhase in
                     if newPhase == .background || newPhase == .inactive {
                         saveCurrentPlaybackPosition()
-                    } else if newPhase == .active {
-                        Task {
-                            await SyncController.shared.synchronizeIfEnabled(container: sharedModelContainer)
-                        }
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .init("StoryCast.SavePlaybackPosition"))) { _ in
@@ -152,7 +125,7 @@ struct StoryCastApp: App {
 
     @MainActor
     private func saveCurrentPlaybackPosition() {
-        guard case .ready = storageBootstrapState else { return }
+        guard storageBootstrapState.allowsLibraryAccess else { return }
 
         let player = AudioPlayerService.shared
         guard let currentURL = player.currentURL else { return }

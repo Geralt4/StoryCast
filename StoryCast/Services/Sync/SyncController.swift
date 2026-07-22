@@ -139,6 +139,16 @@ final class SyncController: ObservableObject {
 
         do {
             let deviceID = try await SyncDeviceIdentity.shared.identifier()
+
+            let tombstones = try context.fetch(FetchDescriptor<SyncTombstone>())
+            let isTombstoned = tombstones.contains {
+                $0.entityKindRaw == SyncEntityKind.book.rawValue && $0.entityID.lowercased() == bookID.uuidString.lowercased()
+            }
+            guard !isTombstoned else { return }
+
+            let books = try context.fetch(FetchDescriptor<Book>())
+            guard books.contains(where: { $0.id == bookID && !$0.isRemote }) else { return }
+
             let recordName = SyncRecordName.progress(bookID: bookID, deviceID: deviceID)
             let heads = try context.fetch(FetchDescriptor<SyncProgressHead>())
             let head = heads.first(where: { $0.id == recordName }) ?? {
@@ -189,84 +199,115 @@ final class SyncController: ObservableObject {
         entityID: String,
         container: ModelContainer
     ) async {
+        let deviceID = try? await SyncDeviceIdentity.shared.identifier()
         let context = ModelContext(container)
 
         do {
-            let runtime = try SyncRuntimeStore.runtime(in: context)
-            let deletedAssets: [(UUID, Int64)]
-            if entityKind == .book, let bookID = UUID(uuidString: entityID) {
-                deletedAssets = try context.fetch(FetchDescriptor<SyncAsset>())
-                    .filter { $0.bookID == bookID }
-                    .map { ($0.id, $0.contentRevision) }
-            } else {
-                deletedAssets = []
-            }
-            try SyncDeletionCoordinator.discardReplicaState(
+            let pendingCleanups = try stageDeletion(
                 entityKind: entityKind,
                 entityID: entityID,
+                deviceID: deviceID,
                 in: context
             )
-            let syncIsEnabled = runtime.desiredModeRaw == SyncMode.enabled.rawValue
-            guard syncIsEnabled || runtime.generationID != nil else {
-                try context.save()
-                return
+            for cleanup in Set(pendingCleanups) {
+                _ = try StorageCleanupCoordinator.stage(
+                    location: cleanup.location,
+                    relativePath: cleanup.relativePath,
+                    in: context
+                )
             }
+            try context.save()
+        } catch {
+            context.rollback()
+            publishFailure(error, container: container)
+            return
+        }
 
-            let deviceID = try await SyncDeviceIdentity.shared.identifier()
-            let tombstoneID = SyncRecordName.tombstone(kind: entityKind, id: entityID.lowercased())
-            let tombstones = try context.fetch(FetchDescriptor<SyncTombstone>())
-            let existing = tombstones.first(where: { $0.id == tombstoneID })
-            let nextRevision = (existing?.revision ?? 0) + 1
-            let deletedAt = Date()
-            if let existing {
-                existing.deletedAt = deletedAt
-                existing.revision = nextRevision
-                existing.deviceID = deviceID
-            } else {
-                context.insert(SyncTombstone(
-                    id: tombstoneID,
-                    entityKindRaw: entityKind.rawValue,
-                    entityID: entityID.lowercased(),
-                    deletedAt: deletedAt,
-                    revision: nextRevision,
-                    deviceID: deviceID
-                ))
-            }
-            let payload = CloudSyncTombstonePayload(
-                entityKind: entityKind,
+        StorageCleanupCoordinator.drainPendingCleanup(in: context)
+
+        let syncContext = ModelContext(container)
+        let runtime = try? SyncRuntimeStore.findOrCreateRuntime(in: syncContext)
+        let syncIsEnabled = runtime?.desiredModeRaw == SyncMode.enabled.rawValue
+        if syncIsEnabled {
+            await synchronizeIfEnabled(container: container, auditLibrary: false)
+        }
+    }
+
+    @discardableResult
+    func stageDeletion(
+        entityKind: SyncEntityKind,
+        entityID: String,
+        deviceID: String?,
+        in context: ModelContext
+    ) throws -> [PendingFileCleanup] {
+        let runtime = try SyncRuntimeStore.findOrCreateRuntime(in: context)
+        let deletedAssets: [(UUID, Int64)]
+        if entityKind == .book, let bookID = UUID(uuidString: entityID) {
+            deletedAssets = try context.fetch(FetchDescriptor<SyncAsset>())
+                .filter { $0.bookID == bookID }
+                .map { ($0.id, $0.contentRevision) }
+        } else {
+            deletedAssets = []
+        }
+
+        let pendingCleanups = try SyncDeletionCoordinator.discardReplicaState(
+            entityKind: entityKind,
+            entityID: entityID,
+            in: context
+        )
+
+        let syncIsEnabled = runtime.desiredModeRaw == SyncMode.enabled.rawValue
+        guard syncIsEnabled || runtime.generationID != nil else { return pendingCleanups }
+
+        let resolvedDeviceID = deviceID ?? ""
+        let tombstoneID = SyncRecordName.tombstone(kind: entityKind, id: entityID.lowercased())
+        let tombstones = try context.fetch(FetchDescriptor<SyncTombstone>())
+        let existing = tombstones.first(where: { $0.id == tombstoneID })
+        let nextRevision = (existing?.revision ?? 0) + 1
+        let deletedAt = Date()
+        if let existing {
+            existing.deletedAt = deletedAt
+            existing.revision = nextRevision
+            existing.deviceID = resolvedDeviceID
+        } else {
+            context.insert(SyncTombstone(
+                id: tombstoneID,
+                entityKindRaw: entityKind.rawValue,
                 entityID: entityID.lowercased(),
                 deletedAt: deletedAt,
                 revision: nextRevision,
-                deviceID: deviceID
-            )
-            let tombstoneOperation = try SyncOutboxStore.upsert(
-                kind: .saveRecord,
-                subjectKind: .tombstone,
-                subjectID: tombstoneID,
-                payloadData: try CloudSyncRecordCodec.encodePayload(payload),
-                in: context
-            )
-            for (assetID, latestRevision) in deletedAssets where latestRevision > 0 {
-                for revision in 1...latestRevision {
-                    _ = try SyncOutboxStore.upsert(
-                        kind: .deleteAsset,
-                        subjectKind: .asset,
-                        subjectID: SyncRecordName.asset(assetID, revision: revision),
-                        payloadData: try CloudSyncRecordCodec.encodePayload(
-                            CloudSyncAssetDeletionPayload(assetID: assetID, revision: revision)
-                        ),
-                        dependencyIDs: [tombstoneOperation.id],
-                        in: context
-                    )
-                }
-            }
-            try context.save()
-            if syncIsEnabled {
-                await synchronizeIfEnabled(container: container, auditLibrary: false)
-            }
-        } catch {
-            publishFailure(error, container: container)
+                deviceID: resolvedDeviceID
+            ))
         }
+        let payload = CloudSyncTombstonePayload(
+            entityKind: entityKind,
+            entityID: entityID.lowercased(),
+            deletedAt: deletedAt,
+            revision: nextRevision,
+            deviceID: resolvedDeviceID
+        )
+        let tombstoneOperation = try SyncOutboxStore.upsert(
+            kind: .saveRecord,
+            subjectKind: .tombstone,
+            subjectID: tombstoneID,
+            payloadData: try CloudSyncRecordCodec.encodePayload(payload),
+            in: context
+        )
+        for (assetID, latestRevision) in deletedAssets where latestRevision > 0 {
+            for revision in 1...latestRevision {
+                _ = try SyncOutboxStore.upsert(
+                    kind: .deleteAsset,
+                    subjectKind: .asset,
+                    subjectID: SyncRecordName.asset(assetID, revision: revision),
+                    payloadData: try CloudSyncRecordCodec.encodePayload(
+                        CloudSyncAssetDeletionPayload(assetID: assetID, revision: revision)
+                    ),
+                    dependencyIDs: [tombstoneOperation.id],
+                    in: context
+                )
+            }
+        }
+        return pendingCleanups
     }
 
     private func synchronize(container: ModelContainer, auditLibrary: Bool) async {
@@ -459,6 +500,17 @@ enum SyncRuntimeStore {
         let runtime = SyncRuntime()
         context.insert(runtime)
         try context.save()
+        return runtime
+    }
+
+    static func findOrCreateRuntime(in context: ModelContext) throws -> SyncRuntime {
+        var descriptor = FetchDescriptor<SyncRuntime>(predicate: #Predicate { $0.id == "runtime" })
+        descriptor.fetchLimit = 1
+        if let runtime = try context.fetch(descriptor).first {
+            return runtime
+        }
+        let runtime = SyncRuntime()
+        context.insert(runtime)
         return runtime
     }
 }

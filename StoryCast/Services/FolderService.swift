@@ -19,4 +19,18 @@ enum FolderService {
         try context.save()
         return folder
     }
+
+    /// Resolves or inserts Unfiled without saving. Use this while applying a
+    /// larger transaction that must commit its folder creation atomically.
+    static func stageUnfiledFolder(in context: ModelContext) throws -> Folder {
+        var fetch = FetchDescriptor<Folder>(predicate: #Predicate { $0.isSystem })
+        fetch.fetchLimit = 1
+        if let existing = try context.fetch(fetch).first {
+            return existing
+        }
+
+        let folder = Folder(name: "Unfiled", isSystem: true, sortOrder: 0)
+        context.insert(folder)
+        return folder
+    }
 }

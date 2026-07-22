@@ -106,6 +106,66 @@ nonisolated final class StartupStabilityTests: XCTestCase {
     }
 
     @MainActor
+    func testManagedLibraryAdoptionSkipsVerifiedSyncAssetBeforeBookArrives() async throws {
+        let container = try makeInMemoryContainer()
+        let libraryURL = try makeTemporaryDirectory()
+        let fileURL = try makeTemporaryAudioFile(in: libraryURL, named: "SyncedBeforeBook.wav")
+        let context = ModelContext(container)
+        context.insert(SyncAsset(
+            bookID: UUID(),
+            kindRaw: SyncAssetKind.audio.rawValue,
+            originalFileName: fileURL.lastPathComponent,
+            pathExtension: "wav",
+            contentTypeIdentifier: "public.audio",
+            byteCount: 1,
+            sha256Hex: "digest",
+            localRelativePath: fileURL.lastPathComponent,
+            localStateRaw: SyncAssetLocalState.verified.rawValue,
+            cloudStateRaw: SyncAssetCloudState.published.rawValue
+        ))
+        try context.save()
+
+        let result = await LibraryMaintenanceService.adoptManagedLibraryFiles(container: container, libraryURL: libraryURL)
+
+        XCTAssertEqual(result.adoptedCount, 0)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<Book>()).isEmpty)
+    }
+
+    @MainActor
+    func testManagedLibraryAdoptionSkipsPendingInboundAssetAfterCrash() async throws {
+        let container = try makeInMemoryContainer()
+        let libraryURL = try makeTemporaryDirectory()
+        let assetID = UUID()
+        let fileName = "icloud-\(assetID.uuidString.lowercased()).wav"
+        _ = try makeTemporaryAudioFile(in: libraryURL, named: fileName)
+        let payload = CloudSyncAssetPayload(
+            assetID: assetID,
+            bookID: UUID(),
+            kind: .audio,
+            contentRevision: 1,
+            originalFileName: "source.wav",
+            cloudRelativePath: "assets/source.wav",
+            pathExtension: "wav",
+            contentTypeIdentifier: "public.audio",
+            byteCount: 1,
+            sha256Hex: "digest",
+            readyAt: Date()
+        )
+        let context = ModelContext(container)
+        context.insert(SyncInboxRecord(
+            id: SyncRecordName.asset(assetID, revision: 1),
+            recordType: CloudSyncRecordType.asset.rawValue,
+            payloadData: try CloudSyncRecordCodec.encodePayload(payload)
+        ))
+        try context.save()
+
+        let result = await LibraryMaintenanceService.adoptManagedLibraryFiles(container: container, libraryURL: libraryURL)
+
+        XCTAssertEqual(result.adoptedCount, 0)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<Book>()).isEmpty)
+    }
+
+    @MainActor
     func testBackgroundRemoteSyncDoesNotMutateRemoteLibraryUIState() async throws {
         RemoteLibraryService.shared.debugResetUIState()
         await BackgroundRemoteCoverArtService.shared.debugResetState()
@@ -354,11 +414,11 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         let container = try ModelContainer(for: v2Schema, migrationPlan: StoryCastMigrationPlan.self, configurations: [v2Config])
         let context = ModelContext(container)
         
-        let folder = Folder(name: "Test Folder", isSystem: false, sortOrder: 0)
+        let folder = SchemaV2.Folder(name: "Test Folder", isSystem: false, sortOrder: 0)
         context.insert(folder)
         try context.save()
         
-        let fetchedFolders = try context.fetch(FetchDescriptor<Folder>())
+        let fetchedFolders = try context.fetch(FetchDescriptor<SchemaV2.Folder>())
         XCTAssertEqual(fetchedFolders.count, 1)
         
         let servers = try context.fetch(FetchDescriptor<ABSServer>())
@@ -449,9 +509,9 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         let v2Container = try ModelContainer(for: v2Schema, configurations: [v2Config])
         let v2Context = ModelContext(v2Container)
         
-        let folder = Folder(name: "V2 Folder", isSystem: false, sortOrder: 0)
+        let folder = SchemaV2.Folder(name: "V2 Folder", isSystem: false, sortOrder: 0)
         v2Context.insert(folder)
-        let book = Book(title: "V2 Book", author: "V2 Author", duration: 1800, folder: folder)
+        let book = SchemaV2.Book(title: "V2 Book", author: "V2 Author", duration: 1800, folder: folder)
         v2Context.insert(book)
         try v2Context.save()
         
@@ -477,6 +537,127 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         XCTAssertEqual(migratedBook?.title, "V2 Book")
         XCTAssertEqual(migratedBook?.author, "V2 Author")
         XCTAssertEqual(migratedBook?.duration, 1800)
+    }
+
+    @MainActor
+    func testV1DatabaseMigratesToV6WithoutLosingLibrary() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("V1ToV6Test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        tempURLs.append(tempDir)
+        let storeURL = tempDir.appendingPathComponent("test.store")
+        let bookID = UUID()
+
+        do {
+            let schema = Schema(versionedSchema: SchemaV1.self)
+            let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(container)
+            let folder = SchemaV1.Folder(name: "V1 Folder", isSystem: false, sortOrder: 2)
+            let book = SchemaV1.Book(
+                id: bookID,
+                title: "V1 Book",
+                author: "V1 Author",
+                localFileName: "v1.m4b",
+                duration: 900,
+                lastPlaybackPosition: 42,
+                folder: folder
+            )
+            context.insert(folder)
+            context.insert(book)
+            try context.save()
+        }
+
+        let schema = Schema(versionedSchema: SchemaV6.self)
+        let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: StoryCastMigrationPlan.self,
+            configurations: [config]
+        )
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.id == bookID })
+        let book = try XCTUnwrap(context.fetch(descriptor).first)
+        XCTAssertEqual(book.title, "V1 Book")
+        XCTAssertEqual(book.author, "V1 Author")
+        XCTAssertEqual(book.localFileName, "v1.m4b")
+        XCTAssertEqual(book.lastPlaybackPosition, 42)
+        XCTAssertEqual(book.folder?.name, "V1 Folder")
+    }
+
+    @MainActor
+    func testMarkerV3DatabaseMigratesWithCompatibilityPlan() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MarkerV3ToV6Test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        tempURLs.append(tempDir)
+        let storeURL = tempDir.appendingPathComponent("test.store")
+        let bookID = UUID()
+
+        do {
+            let schema = Schema(versionedSchema: SchemaV3WithMarker.self)
+            let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(container)
+            let folder = Folder(name: "Marker Folder", isSystem: false, sortOrder: 1)
+            let book = Book(id: bookID, title: "Marker Book", localFileName: "marker.m4b", duration: 600, folder: folder)
+            context.insert(folder)
+            context.insert(book)
+            context.insert(SchemaV3Marker())
+            try context.save()
+        }
+
+        let schema = Schema(versionedSchema: SchemaV6.self)
+        let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: StoryCastMarkerV3MigrationPlan.self,
+            configurations: [config]
+        )
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.id == bookID })
+        XCTAssertEqual(try context.fetch(descriptor).first?.title, "Marker Book")
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SchemaV3Marker>()).count, 1)
+    }
+
+    @MainActor
+    func testLegacyV4DatabaseMigratesWithCompatibilityPlan() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LegacyV4ToV6Test_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        tempURLs.append(tempDir)
+        let storeURL = tempDir.appendingPathComponent("test.store")
+        let stateID = "book:\(UUID().uuidString.lowercased())"
+
+        do {
+            let schema = Schema(versionedSchema: SchemaV4Legacy.self)
+            let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(container)
+            context.insert(SchemaV4Legacy.SyncEntityState(
+                id: stateID,
+                entityKindRaw: "book",
+                localEntityID: UUID().uuidString.lowercased(),
+                recordName: "book/legacy",
+                revision: 2,
+                deviceID: "legacy-device"
+            ))
+            try context.save()
+        }
+
+        let schema = Schema(versionedSchema: SchemaV6.self)
+        let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: StoryCastLegacyV4MigrationPlan.self,
+            configurations: [config]
+        )
+        let context = ModelContext(container)
+        let descriptor = FetchDescriptor<SyncEntityState>(predicate: #Predicate { $0.id == stateID })
+        let state = try XCTUnwrap(context.fetch(descriptor).first)
+        XCTAssertEqual(state.revision, 2)
+        XCTAssertEqual(state.deviceID, "legacy-device")
+        XCTAssertNil(state.contentDigest)
     }
 
     @MainActor
@@ -538,7 +719,7 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         try v4Context.save()
         XCTAssertEqual(try v4Context.fetch(FetchDescriptor<SyncRuntime>()).count, 1)
     }
-    
+
     @MainActor
     func testAppBootstrapOpensExistingV3DatabaseFile() throws {
         let tempDir = FileManager.default.temporaryDirectory
@@ -580,8 +761,9 @@ nonisolated final class StartupStabilityTests: XCTestCase {
     }
 
     private func makeInMemoryContainer() throws -> ModelContainer {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
-        return try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
+        let schema = Schema(versionedSchema: SchemaV6.self)
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        return try ModelContainer(for: schema, configurations: [config])
     }
     
     // MARK: - Version Mismatch Tests

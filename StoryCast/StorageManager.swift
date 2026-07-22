@@ -11,6 +11,12 @@ private struct RemoteBookMigrationInfo: Sendable {
     let coverArtFileName: String?
 }
 
+private struct RemoteAssetMigrationSnapshot: Sendable {
+    let remoteBooks: [RemoteBookMigrationInfo]
+    let localAudioFileNames: Set<String>
+    let localCoverArtFileNames: Set<String>
+}
+
 actor StorageManager {
     /// Canonical folder name for locally imported audio.
     nonisolated static let libraryFolderName = "StoryCastLibrary"
@@ -154,20 +160,26 @@ actor StorageManager {
     }
 
     func deleteCoverArt(fileName: String, isRemote: Bool = false) {
-        let fileURLs = isRemote
-            ? [coverArtURL(for: fileName, isRemote: true), coverArtDirectoryURL.appendingPathComponent(fileName)]
-            : [coverArtDirectoryURL.appendingPathComponent(fileName), remoteCoverArtDirectoryURL.appendingPathComponent(fileName)]
+        guard isSafeManagedFileName(fileName) else {
+            AppLogger.storage.warning("Skipped unsafe cover art deletion path: \(fileName)")
+            return
+        }
 
-        removeFiles(at: fileURLs, errorMessage: "Error deleting cover art")
+        // Do not delete from the legacy fallback root here. A matching name can
+        // legitimately belong to a book in the other library namespace.
+        let directoryURL = isRemote ? remoteCoverArtDirectoryURL : coverArtDirectoryURL
+        removeFiles(at: [directoryURL.appendingPathComponent(fileName)], errorMessage: "Error deleting cover art")
     }
 
     func deleteRemoteAudioCache(fileName: String) {
-        let fileURLs = [
-            remoteAudioCacheURL(for: fileName),
-            storyCastLibraryURL.appendingPathComponent(fileName)
-        ]
+        guard isSafeManagedFileName(fileName) else {
+            AppLogger.storage.warning("Skipped unsafe remote audio deletion path: \(fileName)")
+            return
+        }
 
-        removeFiles(at: fileURLs)
+        // Local imported audio may share the old fallback filename, so only the
+        // remote cache owns this direct-deletion operation.
+        removeFiles(at: [remoteAudioCacheURL(for: fileName)])
     }
 
     func copyFileToStoryCastLibraryDirectory(from sourceURL: URL, withName name: String) throws -> URL {
@@ -204,14 +216,18 @@ actor StorageManager {
         try setupRemoteAudioCacheDirectory()
         try setupRemoteCoverArtDirectory()
 
-        let booksToMigrate = await Self.fetchRemoteBooksForMigration(container: container)
+        guard let migrationSnapshot = await Self.fetchRemoteBooksForMigration(container: container) else {
+            return
+        }
         let fileManager = FileManager.default
 
-        for bookInfo in booksToMigrate {
+        for bookInfo in migrationSnapshot.remoteBooks {
             try migrateRemoteAssets(
                 isDownloaded: bookInfo.isDownloaded,
                 localCachePath: bookInfo.localCachePath,
                 coverArtFileName: bookInfo.coverArtFileName,
+                localAudioFileNames: migrationSnapshot.localAudioFileNames,
+                localCoverArtFileNames: migrationSnapshot.localCoverArtFileNames,
                 fileManager: fileManager
             )
         }
@@ -220,20 +236,26 @@ actor StorageManager {
     }
 
     @MainActor
-    private static func fetchRemoteBooksForMigration(container: ModelContainer) -> [RemoteBookMigrationInfo] {
+    private static func fetchRemoteBooksForMigration(container: ModelContainer) -> RemoteAssetMigrationSnapshot? {
         let context = ModelContext(container)
         do {
-            let books = try context.fetch(FetchDescriptor<Book>(predicate: #Predicate { $0.isRemote }))
-            return books.map { book in
+            let books = try context.fetch(FetchDescriptor<Book>())
+            let remoteBooks = books.filter(\.isRemote).map { book in
                 RemoteBookMigrationInfo(
                     isDownloaded: book.isDownloaded,
                     localCachePath: book.localCachePath,
                     coverArtFileName: book.coverArtFileName
                 )
             }
+            let localBooks = books.filter { !$0.isRemote }
+            return RemoteAssetMigrationSnapshot(
+                remoteBooks: remoteBooks,
+                localAudioFileNames: Set(localBooks.map(\.localFileName)),
+                localCoverArtFileNames: Set(localBooks.compactMap(\.coverArtFileName))
+            )
         } catch {
             AppLogger.storage.error("Failed to fetch remote books for migration: \(error.localizedDescription, privacy: .private)")
-            return []
+            return nil
         }
     }
 
@@ -241,17 +263,22 @@ actor StorageManager {
         isDownloaded: Bool,
         localCachePath: String?,
         coverArtFileName: String?,
+        localAudioFileNames: Set<String>,
+        localCoverArtFileNames: Set<String>,
         fileManager: FileManager
     ) throws {
-        if isDownloaded, let cachePath = localCachePath {
-            let legacyURL = storyCastLibraryURL.appendingPathComponent(cachePath)
-            let privateURL = remoteAudioCacheURL(for: cachePath)
+        if isDownloaded,
+           let cachePath = localCachePath,
+           !localAudioFileNames.contains(cachePath),
+           let legacyURL = managedFileURL(in: storyCastLibraryURL, named: cachePath),
+           let privateURL = managedFileURL(in: remoteAudioCacheDirectoryURL, named: cachePath) {
             try migrateFileIfNeeded(from: legacyURL, to: privateURL, fileManager: fileManager)
         }
 
-        if let coverArtFileName = coverArtFileName {
-            let legacyURL = coverArtDirectoryURL.appendingPathComponent(coverArtFileName)
-            let privateURL = remoteCoverArtDirectoryURL.appendingPathComponent(coverArtFileName)
+        if let coverArtFileName,
+           !localCoverArtFileNames.contains(coverArtFileName),
+           let legacyURL = managedFileURL(in: coverArtDirectoryURL, named: coverArtFileName),
+           let privateURL = managedFileURL(in: remoteCoverArtDirectoryURL, named: coverArtFileName) {
             try migrateFileIfNeeded(from: legacyURL, to: privateURL, fileManager: fileManager)
         }
     }
@@ -332,6 +359,9 @@ actor StorageManager {
     }
 
     private func preparedLibraryDestinationURL(for name: String) throws -> URL {
+        guard isSafeManagedFileName(name) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
         try setupStoryCastLibraryDirectory()
         let uniqueName = uniqueFileName(for: name)
         return storyCastLibraryURL.appendingPathComponent(uniqueName)
@@ -382,13 +412,37 @@ actor StorageManager {
     private func removeFiles(at fileURLs: [URL], errorMessage: String? = nil) {
         let fileManager = FileManager.default
 
-        for fileURL in Set(fileURLs) where fileManager.fileExists(atPath: fileURL.path) {
+        for fileURL in Set(fileURLs) {
             do {
+                let attributes = try fileManager.attributesOfItem(atPath: fileURL.path)
+                guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                    AppLogger.storage.warning("Skipped non-file storage cleanup target: \(fileURL.path)")
+                    continue
+                }
                 try fileManager.removeItem(at: fileURL)
             } catch {
+                let cocoaError = error as? CocoaError
+                if cocoaError?.code == .fileNoSuchFile { continue }
                 AppLogger.storage.error("Storage cleanup failed: \(error.localizedDescription, privacy: .private)")
             }
         }
+    }
+
+    private func isSafeManagedFileName(_ fileName: String) -> Bool {
+        !fileName.isEmpty &&
+            fileName == (fileName as NSString).lastPathComponent &&
+            fileName != "." &&
+            fileName != ".." &&
+            !fileName.contains("/") &&
+            !fileName.unicodeScalars.contains("\u{0000}")
+    }
+
+    private func managedFileURL(in directoryURL: URL, named fileName: String) -> URL? {
+        guard isSafeManagedFileName(fileName) else { return nil }
+        let root = directoryURL.standardizedFileURL
+        let fileURL = root.appendingPathComponent(fileName).standardizedFileURL
+        guard fileURL.deletingLastPathComponent() == root else { return nil }
+        return fileURL
     }
 
     private func contentsOfDirectory(at directoryURL: URL) throws -> [URL] {
@@ -401,10 +455,20 @@ actor StorageManager {
 
     #if os(iOS)
     private func migrateFileIfNeeded(from sourceURL: URL, to destinationURL: URL, fileManager: FileManager) throws {
-        let sourceExists = fileManager.fileExists(atPath: sourceURL.path)
-        let destinationExists = fileManager.fileExists(atPath: destinationURL.path)
+        let sourceAttributes = try? fileManager.attributesOfItem(atPath: sourceURL.path)
+        let destinationAttributes = try? fileManager.attributesOfItem(atPath: destinationURL.path)
+        let sourceExists = sourceAttributes != nil
+        let destinationExists = destinationAttributes != nil
 
         guard sourceExists || destinationExists else { return }
+        guard sourceAttributes?[.type] as? FileAttributeType == .typeRegular || !sourceExists else {
+            AppLogger.storage.warning("Skipped non-file legacy remote asset: \(sourceURL.path)")
+            return
+        }
+        guard destinationAttributes?[.type] as? FileAttributeType == .typeRegular || !destinationExists else {
+            AppLogger.storage.warning("Skipped non-file remote cache destination: \(destinationURL.path)")
+            return
+        }
 
         if sourceExists && !destinationExists {
             try fileManager.moveItem(at: sourceURL, to: destinationURL)
@@ -468,7 +532,9 @@ actor StorageManager {
         }
         
         // Also delete SwiftData database files to prevent orphaned references
-        StorageBackupManager.deleteDatabaseFiles()
+        if !StorageBackupManager.deleteDatabaseFiles() {
+            failedDeletions.append("database")
+        }
         
         if let bundleId = Bundle.main.bundleIdentifier {
             // This is a nuclear reset that removes ALL UserDefaults keys for this

@@ -18,7 +18,7 @@ struct StorageRecoveryView: View {
                         .foregroundStyle(.secondary)
                     
                     if recoveryComplete {
-                        Label("Recovery complete. Please restart the app.", systemImage: "checkmark.circle.fill")
+                        Label("New library created. Please restart the app.", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                             .padding(.top, 8)
                     } else if let error = recoveryError {
@@ -33,7 +33,7 @@ struct StorageRecoveryView: View {
                 }
             } actions: {
                 if recoveryComplete {
-                    Text("Recovery Complete")
+                    Text("New Library Created")
                         .font(.headline)
                         .foregroundStyle(.green)
                 } else if isRecovering {
@@ -63,18 +63,16 @@ struct StorageRecoveryView: View {
         recoveryError = nil
         
         Task {
-            let state = await AppBootstrap.startFresh()
+            let outcome = await AppBootstrap.startFresh()
             
             await MainActor.run {
                 isRecovering = false
                 
-                switch state {
-                case .ready:
+                switch outcome {
+                case .restartRequired:
                     recoveryComplete = true
-                case .unrecoverable(let error):
+                case .failed(let error):
                     recoveryError = error.localizedDescription
-                default:
-                    recoveryError = "An unexpected error occurred"
                 }
             }
         }

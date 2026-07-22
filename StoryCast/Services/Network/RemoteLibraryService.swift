@@ -175,30 +175,20 @@ final class RemoteLibraryService: ObservableObject {
             )
             let books = try context.fetch(descriptor)
             let bookIds = Set(books.map(\.id))
-            let assetReferences = books.map { book in
-                (cachePath: book.localCachePath, coverArtFileName: book.coverArtFileName)
-            }
 
             cancelCoverArtDownloads(for: bookIds)
             await BackgroundRemoteCoverArtService.shared.cancelTasks(for: bookIds)
             DownloadManager.shared.cancelDownloads(for: bookIds)
 
             for book in books {
-                context.delete(book)
+                try LibraryDeletionTransaction.stageBookDeletion(book, deviceID: nil, in: context)
             }
             try context.save()
-
-            for reference in assetReferences {
-                if let cachePath = reference.cachePath {
-                    await StorageManager.shared.deleteRemoteAudioCache(fileName: cachePath)
-                }
-                if let coverArtFileName = reference.coverArtFileName {
-                    await StorageManager.shared.deleteCoverArt(fileName: coverArtFileName, isRemote: true)
-                }
-            }
+            StorageCleanupCoordinator.drainPendingCleanup(in: context)
 
             AppLogger.network.info("Removed \(books.count) remote books for server \(snapshot.name, privacy: .private)")
         } catch {
+            context.rollback()
             AppLogger.network.error("Failed to remove remote books: \(error.localizedDescription, privacy: .private)")
             throw RemoteBookRemovalError.cleanupFailed(underlying: error)
         }

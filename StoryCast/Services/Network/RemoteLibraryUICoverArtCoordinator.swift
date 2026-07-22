@@ -117,6 +117,7 @@ final class RemoteLibraryUICoverArtCoordinator {
     private func downloadAndSaveCoverArt(request: RemoteCoverArtRequest, container: ModelContainer) async {
         let compoundKey = "\(request.serverId.uuidString)_\(request.bookId.uuidString)"
 
+        guard !Task.isCancelled else { return }
         guard let token = await AudiobookshelfAuth.shared.token(for: request.serverURL) else { return }
 
         do {
@@ -125,10 +126,13 @@ final class RemoteLibraryUICoverArtCoordinator {
                 token: token,
                 itemId: request.itemId
             )
+            try Task.checkCancellation()
             _ = try await RemoteCoverArtPersistence.persistCoverArt(data, for: request, container: container)
             _ = await MainActor.run {
                 self.failures.removeValue(forKey: compoundKey)
             }
+        } catch where Task.isCancelled {
+            return
         } catch {
             AppLogger.network.debug("Cover art download failed for \(request.itemId, privacy: .private): \(error.localizedDescription, privacy: .private)")
 
@@ -149,7 +153,12 @@ final class RemoteLibraryUICoverArtCoordinator {
                     let bookId = request.bookId
                     self.tasks[bookId]?.cancel()
                     self.tasks[bookId] = Task(priority: .utility) {
-                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        do {
+                            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                            try Task.checkCancellation()
+                        } catch {
+                            return
+                        }
                         await self.downloadAndSaveCoverArt(request: request, container: container)
                         _ = await MainActor.run { self.tasks.removeValue(forKey: bookId) }
                     }

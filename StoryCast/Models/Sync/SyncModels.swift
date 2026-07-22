@@ -289,7 +289,6 @@ final class SyncMigrationJournal {
         self.updatedAt = updatedAt
     }
 }
-
 @Model
 final class SyncAccountBinding {
     @Attribute(.unique) var id: String
@@ -351,5 +350,141 @@ final class SyncAssetRetentionState {
         self.id = assetID.uuidString.lowercased()
         self.assetID = assetID
         self.prunedThroughRevision = prunedThroughRevision
+    }
+}
+@Model
+final class StorageCleanupJournalEntry {
+    @Attribute(.unique) var id: UUID
+    var locationRaw: String
+    var relativePath: String
+    var createdAt: Date
+    var attemptCount: Int
+    var lastErrorMessage: String?
+
+    init(
+        id: UUID = UUID(),
+        locationRaw: String,
+        relativePath: String,
+        createdAt: Date = Date(),
+        attemptCount: Int = 0,
+        lastErrorMessage: String? = nil
+    ) {
+        self.id = id
+        self.locationRaw = locationRaw
+        self.relativePath = relativePath
+        self.createdAt = createdAt
+        self.attemptCount = attemptCount
+        self.lastErrorMessage = lastErrorMessage
+    }
+}
+
+@Model
+final class SyncLocalMutation {
+    @Attribute(.unique) var id: String
+    var subjectKindRaw: String
+    var localEntityID: String
+    var recordName: String?
+    var version: Int64
+    var intentData: Data?
+    var changedAt: Date
+    var stateRaw: String
+    var operationID: UUID?
+    var materializedVersion: Int64
+    var reasonRaw: String
+
+    init(
+        id: String,
+        subjectKindRaw: String,
+        localEntityID: String,
+        recordName: String? = nil,
+        version: Int64 = 1,
+        intentData: Data? = nil,
+        changedAt: Date = Date(),
+        stateRaw: String = "dirty",
+        operationID: UUID? = nil,
+        materializedVersion: Int64 = 0,
+        reasonRaw: String
+    ) {
+        self.id = id
+        self.subjectKindRaw = subjectKindRaw
+        self.localEntityID = localEntityID
+        self.recordName = recordName
+        self.version = version
+        self.intentData = intentData
+        self.changedAt = changedAt
+        self.stateRaw = stateRaw
+        self.operationID = operationID
+        self.materializedVersion = materializedVersion
+        self.reasonRaw = reasonRaw
+    }
+}
+
+@Model
+final class SyncInboxRetryState {
+    @Attribute(.unique) var recordName: String
+    var deliveryFingerprint: String
+    var attemptCount: Int
+    var nextRetryAt: Date?
+    var lastAttemptAt: Date?
+    var lastErrorMessage: String?
+    var stagedAssetRelativePath: String?
+    var claimID: UUID?
+    var updatedAt: Date
+
+    init(
+        recordName: String,
+        deliveryFingerprint: String,
+        attemptCount: Int = 0,
+        nextRetryAt: Date? = nil,
+        lastAttemptAt: Date? = nil,
+        lastErrorMessage: String? = nil,
+        stagedAssetRelativePath: String? = nil,
+        claimID: UUID? = nil,
+        updatedAt: Date = Date()
+    ) {
+        self.recordName = recordName
+        self.deliveryFingerprint = deliveryFingerprint
+        self.attemptCount = attemptCount
+        self.nextRetryAt = nextRetryAt
+        self.lastAttemptAt = lastAttemptAt
+        self.lastErrorMessage = lastErrorMessage
+        self.stagedAssetRelativePath = stagedAssetRelativePath
+        self.claimID = claimID
+        self.updatedAt = updatedAt
+    }
+}
+
+@Model
+final class ServerRemovalJournalEntry {
+    @Attribute(.unique) var serverID: UUID
+    var normalizedURL: String
+    var displayName: String
+    var previousIsActive: Bool
+    var phaseRaw: String
+    var createdAt: Date
+    var updatedAt: Date
+    var attemptCount: Int
+    var lastErrorMessage: String?
+
+    init(
+        serverID: UUID,
+        normalizedURL: String,
+        displayName: String,
+        previousIsActive: Bool,
+        phaseRaw: String = "prepared",
+        createdAt: Date = Date(),
+        updatedAt: Date = Date(),
+        attemptCount: Int = 0,
+        lastErrorMessage: String? = nil
+    ) {
+        self.serverID = serverID
+        self.normalizedURL = normalizedURL
+        self.displayName = displayName
+        self.previousIsActive = previousIsActive
+        self.phaseRaw = phaseRaw
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.attemptCount = attemptCount
+        self.lastErrorMessage = lastErrorMessage
     }
 }

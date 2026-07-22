@@ -28,35 +28,50 @@ final class LibraryBookActions {
         }
     }
 
-    func deleteBook(_ book: Book, saveChanges: Bool = true) async throws {
-        let deletedLocalBookID = book.isRemote ? nil : book.id
-        await deleteBookFiles(for: book)
-        modelContext.delete(book)
+    func deleteBook(_ book: Book) async throws {
+        let containsLocalBook = !book.isRemote
+        let deviceID = containsLocalBook ? try? await SyncDeviceIdentity.shared.identifier() : nil
+        let context = modelContext
 
-        if saveChanges {
-            try modelContext.save()
-            if let deletedLocalBookID {
-                await SyncController.shared.recordDeletion(
-                    entityKind: .book,
-                    entityID: deletedLocalBookID.uuidString,
-                    container: modelContext.container
-                )
-            }
+        do {
+            try LibraryDeletionTransaction.stageBookDeletion(book, deviceID: deviceID, in: context)
+            try context.save()
+        } catch {
+            context.rollback()
+            throw error
+        }
+
+        StorageCleanupCoordinator.drainPendingCleanup(in: context)
+        if containsLocalBook {
+            await SyncController.shared.synchronizeIfEnabled(
+                container: context.container,
+                auditLibrary: false
+            )
         }
     }
 
     func deleteBooks(_ books: [Book]) async throws {
-        let deletedLocalBookIDs = books.filter { !$0.isRemote }.map(\.id)
-        for book in books {
-            try await deleteBook(book, saveChanges: false)
+        guard !books.isEmpty else { return }
+
+        let containsLocalBook = books.contains { !$0.isRemote }
+        let deviceID = containsLocalBook ? try? await SyncDeviceIdentity.shared.identifier() : nil
+        let context = modelContext
+
+        do {
+            for book in books {
+                try LibraryDeletionTransaction.stageBookDeletion(book, deviceID: deviceID, in: context)
+            }
+            try context.save()
+        } catch {
+            context.rollback()
+            throw error
         }
 
-        try modelContext.save()
-        for bookID in deletedLocalBookIDs {
-            await SyncController.shared.recordDeletion(
-                entityKind: .book,
-                entityID: bookID.uuidString,
-                container: modelContext.container
+        StorageCleanupCoordinator.drainPendingCleanup(in: context)
+        if containsLocalBook {
+            await SyncController.shared.synchronizeIfEnabled(
+                container: context.container,
+                auditLibrary: false
             )
         }
     }
@@ -69,24 +84,4 @@ final class LibraryBookActions {
         remoteHandler.removeDownloadedBook(book)
     }
 
-    private func deleteBookFiles(for book: Book) async {
-        if book.isRemote {
-            if let cachePath = book.localCachePath {
-                await StorageManager.shared.deleteRemoteAudioCache(fileName: cachePath)
-            }
-        } else if !book.localFileName.isEmpty {
-            let audioURL = StorageManager.shared.storyCastLibraryURL.appendingPathComponent(book.localFileName)
-            if FileManager.default.fileExists(atPath: audioURL.path) {
-                do {
-                    try FileManager.default.removeItem(at: audioURL)
-                } catch {
-                    AppLogger.ui.error("Error deleting audio file: \(error.localizedDescription, privacy: .private)")
-                }
-            }
-        }
-
-        if let coverArtFileName = book.coverArtFileName {
-            await StorageManager.shared.deleteCoverArt(fileName: coverArtFileName, isRemote: book.isRemote)
-        }
-    }
 }

@@ -100,12 +100,17 @@ final class LibraryRemoteBookHandler {
         Task {
             let previousIsDownloaded = book.isDownloaded
             let previousLocalCachePath = book.localCachePath
-            book.isDownloaded = false
-            book.localCachePath = nil
-            
+
             do {
+                _ = try StorageCleanupCoordinator.stage(
+                    location: .remoteAudioCache,
+                    relativePath: cachePath,
+                    in: modelContext
+                )
+                book.isDownloaded = false
+                book.localCachePath = nil
                 try modelContext.save()
-                await StorageManager.shared.deleteRemoteAudioCache(fileName: cachePath)
+                StorageCleanupCoordinator.drainPendingCleanup(in: modelContext)
             } catch {
                 modelContext.rollback()
                 book.isDownloaded = previousIsDownloaded
@@ -171,12 +176,17 @@ final class LibraryRemoteBookHandler {
             (book: book, isDownloaded: book.isDownloaded, localCachePath: book.localCachePath)
         }
 
-        for book in booksToRemove {
-            book.isDownloaded = false
-            book.localCachePath = nil
-        }
-        
         do {
+            for state in originalStates {
+                guard let cachePath = state.localCachePath else { continue }
+                _ = try StorageCleanupCoordinator.stage(
+                    location: .remoteAudioCache,
+                    relativePath: cachePath,
+                    in: modelContext
+                )
+                state.book.isDownloaded = false
+                state.book.localCachePath = nil
+            }
             try modelContext.save()
         } catch {
             modelContext.rollback()
@@ -190,15 +200,7 @@ final class LibraryRemoteBookHandler {
             return 0
         }
 
-        await withTaskGroup(of: Void.self) { group in
-            for state in originalStates {
-                guard let cachePath = state.localCachePath else { continue }
-
-                group.addTask {
-                    await StorageManager.shared.deleteRemoteAudioCache(fileName: cachePath)
-                }
-            }
-        }
+        StorageCleanupCoordinator.drainPendingCleanup(in: modelContext)
         
         return originalStates.count
     }

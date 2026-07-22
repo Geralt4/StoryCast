@@ -1,6 +1,30 @@
 import Foundation
 import os
 
+nonisolated struct StorageBackupManifest: Codable, Sendable {
+    static let currentVersion = 1
+
+    let version: Int
+    let createdAt: Date
+    let storeFileName: String
+    let includedFileNames: [String]
+    let byteCounts: [String: Int64]
+}
+
+nonisolated enum StorageBackupError: LocalizedError {
+    case mainStoreMissing
+    case verificationFailed(fileName: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .mainStoreMissing:
+            return "The database store does not exist."
+        case .verificationFailed(let fileName):
+            return "The backup copy of \(fileName) could not be verified."
+        }
+    }
+}
+
 /// Manages database backups before recovery operations
 nonisolated enum StorageBackupManager {
     
@@ -9,41 +33,56 @@ nonisolated enum StorageBackupManager {
     private static let backupDirectoryName = "Backups"
     private static let maxBackupCount = 3
     private static let databaseFileName = "default.store"
+    private static let backupBundleExtension = "storycastbackup"
+    private static let manifestFileName = "manifest.json"
     
     // MARK: - Database Location
     
     /// Returns the URL of the SwiftData database file
     /// SwiftData stores at: Application Support/default.store
     static var databaseURL: URL? {
-        guard let appSupportURL = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first else {
-            return nil
-        }
-        
-        let storeURL = appSupportURL.appendingPathComponent(databaseFileName)
+        guard let storeURL = configuredDatabaseURL else { return nil }
         return FileManager.default.fileExists(atPath: storeURL.path) ? storeURL : nil
+    }
+
+    private static var configuredDatabaseURL: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent(databaseFileName)
     }
     
     /// Returns all database-related files (main store, WAL, SHM)
     static var databaseFiles: [URL] {
-        guard let mainStore = databaseURL else { return [] }
-        return [
-            mainStore,
-            mainStore.appendingPathExtension("wal"),
-            mainStore.appendingPathExtension("shm")
-        ].filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard let mainStore = configuredDatabaseURL else { return [] }
+        return databaseFileURLs(for: mainStore)
+    }
+
+    static func databaseFileURLs(
+        for mainStoreURL: URL,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        canonicalDatabaseFileURLs(for: mainStoreURL).filter {
+            fileManager.fileExists(atPath: $0.path)
+        }
     }
     
     /// Deletes all database files
     /// - Returns: True if all files were deleted successfully
     @discardableResult
     static func deleteDatabaseFiles() -> Bool {
+        guard let mainStoreURL = configuredDatabaseURL else { return false }
+        return deleteDatabaseFiles(mainStoreURL: mainStoreURL)
+    }
+
+    @discardableResult
+    static func deleteDatabaseFiles(
+        mainStoreURL: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
         var allSucceeded = true
-        for fileURL in databaseFiles {
+        for fileURL in canonicalDatabaseFileURLs(for: mainStoreURL)
+        where fileManager.fileExists(atPath: fileURL.path) {
             do {
-                try FileManager.default.removeItem(at: fileURL)
+                try fileManager.removeItem(at: fileURL)
             } catch {
                 AppLogger.app.error("Failed to delete \(fileURL.lastPathComponent): \(error.localizedDescription)")
                 allSucceeded = false
@@ -75,77 +114,148 @@ nonisolated enum StorageBackupManager {
     // MARK: - Backup Operations
     
     /// Creates a backup of the current database
-    /// - Returns: URL of the backup file, or nil if no database exists or backup failed
+    /// - Returns: URL of the complete backup bundle, or nil if no database exists or backup failed
     static func backupDatabase() -> URL? {
-        guard let databaseURL = databaseURL,
-              FileManager.default.fileExists(atPath: databaseURL.path) else {
+        guard let databaseURL else {
             AppLogger.app.info("No database to backup")
             return nil
         }
-        
-        cleanupOldBackups()
-        
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let timestamp = dateFormatter.string(from: Date())
-        
-        let backupFileName = "StoryCast_backup_\(timestamp).store"
-        let backupURL = backupDirectoryURL.appendingPathComponent(backupFileName)
 
-        var anySucceeded = false
-        for sourceFile in databaseFiles {
-            let baseName: String
-            if sourceFile.pathExtension == "store" {
-                baseName = "StoryCast_backup_\(timestamp).store"
-            } else {
-                // WAL/SHM files: preserve the full extension chain (e.g., .store.wal)
-                baseName = "StoryCast_backup_\(timestamp).store.\(sourceFile.pathExtension)"
-            }
-            let destURL = backupDirectoryURL.appendingPathComponent(baseName)
-            do {
-                try FileManager.default.copyItem(at: sourceFile, to: destURL)
-                if sourceFile == databaseURL { anySucceeded = true }
-            } catch {
-                AppLogger.app.error("Failed to backup \(sourceFile.lastPathComponent): \(error.localizedDescription)")
-            }
-        }
-
-        if anySucceeded {
+        do {
+            let backupURL = try createBackup(
+                mainStoreURL: databaseURL,
+                backupDirectoryURL: backupDirectoryURL
+            )
             AppLogger.app.info("Database backed up to: \(backupURL.path)")
             return backupURL
+        } catch {
+            AppLogger.app.error("Database backup failed: \(error.localizedDescription)")
+            return nil
         }
-        return nil
+    }
+
+    static func createBackup(
+        mainStoreURL: URL,
+        backupDirectoryURL: URL,
+        date: Date = Date(),
+        fileManager: FileManager = .default,
+        copyItem: ((_ source: URL, _ destination: URL) throws -> Void)? = nil
+    ) throws -> URL {
+        guard fileManager.fileExists(atPath: mainStoreURL.path) else {
+            throw StorageBackupError.mainStoreMissing
+        }
+
+        try fileManager.createDirectory(
+            at: backupDirectoryURL,
+            withIntermediateDirectories: true
+        )
+
+        let sourceFiles = databaseFileURLs(for: mainStoreURL, fileManager: fileManager)
+        let sourceSizes = try Dictionary(uniqueKeysWithValues: sourceFiles.map { source in
+            let attributes = try fileManager.attributesOfItem(atPath: source.path)
+            let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+            return (source.lastPathComponent, size)
+        })
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        let timestamp = dateFormatter.string(from: date)
+        let uniqueSuffix = UUID().uuidString.prefix(8).lowercased()
+        let finalPathURL = backupDirectoryURL
+            .appendingPathComponent("StoryCast_backup_\(timestamp)_\(uniqueSuffix)")
+            .appendingPathExtension(backupBundleExtension)
+        let finalURL = URL(fileURLWithPath: finalPathURL.path, isDirectory: true)
+        let stagingURL = backupDirectoryURL
+            .appendingPathComponent(".partial-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: stagingURL, withIntermediateDirectories: false)
+        var shouldRemoveStaging = true
+        defer {
+            if shouldRemoveStaging {
+                try? fileManager.removeItem(at: stagingURL)
+            }
+        }
+
+        let performCopy = copyItem ?? { source, destination in
+            try fileManager.copyItem(at: source, to: destination)
+        }
+        for sourceFile in sourceFiles {
+            let destination = stagingURL.appendingPathComponent(sourceFile.lastPathComponent)
+            try performCopy(sourceFile, destination)
+            let attributes = try fileManager.attributesOfItem(atPath: destination.path)
+            let copiedSize = (attributes[.size] as? NSNumber)?.int64Value ?? -1
+            guard copiedSize == sourceSizes[sourceFile.lastPathComponent] else {
+                throw StorageBackupError.verificationFailed(fileName: sourceFile.lastPathComponent)
+            }
+        }
+
+        let manifest = StorageBackupManifest(
+            version: StorageBackupManifest.currentVersion,
+            createdAt: date,
+            storeFileName: mainStoreURL.lastPathComponent,
+            includedFileNames: sourceFiles.map(\.lastPathComponent),
+            byteCounts: sourceSizes
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(manifest).write(
+            to: stagingURL.appendingPathComponent(manifestFileName),
+            options: .atomic
+        )
+
+        try fileManager.moveItem(at: stagingURL, to: finalURL)
+        shouldRemoveStaging = false
+        cleanupOldBackups(in: backupDirectoryURL, keeping: maxBackupCount, fileManager: fileManager)
+        return finalURL
     }
     
     /// Lists all available backups, sorted by date (newest first)
     static func listBackups() -> [URL] {
-        guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: backupDirectoryURL,
-            includingPropertiesForKeys: [.creationDateKey]
+        listBackups(in: backupDirectoryURL)
+    }
+
+    static func listBackups(
+        in directoryURL: URL,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey]
         ) else {
             return []
         }
-        
-        // Filter to only main store files (exclude .wal, .shm backups)
+
         let backups = contents.filter { url in
-            url.pathExtension == "store" && url.lastPathComponent.hasSuffix(".store") && !url.lastPathComponent.contains(".store.")
+            if url.pathExtension == backupBundleExtension {
+                return backupManifest(at: url, fileManager: fileManager) != nil &&
+                    backupStoreURL(for: url, fileManager: fileManager) != nil
+            }
+            return isLegacyMainStoreBackup(url)
         }
-        
+
         return backups.sorted { url1, url2 in
-            let date1 = (try? url1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
-            let date2 = (try? url2.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date.distantPast
+            let date1 = backupDate(for: url1, fileManager: fileManager)
+            let date2 = backupDate(for: url2, fileManager: fileManager)
             return date1 > date2
         }
     }
     
     /// Removes old backups, keeping only the most recent `maxBackupCount` backups
     static func cleanupOldBackups() {
-        let backups = listBackups()
-        let backupsToDelete = backups.dropFirst(maxBackupCount)
-        
+        cleanupOldBackups(in: backupDirectoryURL, keeping: maxBackupCount)
+    }
+
+    static func cleanupOldBackups(
+        in directoryURL: URL,
+        keeping maximumCount: Int,
+        fileManager: FileManager = .default
+    ) {
+        let backupsToDelete = listBackups(in: directoryURL, fileManager: fileManager)
+            .dropFirst(max(0, maximumCount))
+
         for backupURL in backupsToDelete {
             do {
-                try FileManager.default.removeItem(at: backupURL)
+                try removeBackup(at: backupURL, fileManager: fileManager)
             } catch {
                 AppLogger.app.warning("Failed to delete old backup: \(error.localizedDescription)")
             }
@@ -154,8 +264,7 @@ nonisolated enum StorageBackupManager {
     
     /// Returns the size of a backup in human-readable format
     static func formattedSize(of backupURL: URL) -> String {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: backupURL.path),
-              let fileSize = attributes[.size] as? Int64 else {
+        guard let fileSize = backupByteCount(at: backupURL) else {
             return "Unknown size"
         }
         
@@ -170,8 +279,173 @@ nonisolated enum StorageBackupManager {
         dateFormatter.dateStyle = .medium
         dateFormatter.timeStyle = .short
         
-        let date = (try? backupURL.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+        let date = backupDate(for: backupURL)
         return dateFormatter.string(from: date)
+    }
+
+    /// Resolves the SQLite main-store URL for a complete bundle or legacy flat backup.
+    static func backupStoreURL(
+        for backupURL: URL,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        if backupURL.pathExtension == backupBundleExtension {
+            guard let manifest = backupManifest(at: backupURL, fileManager: fileManager) else { return nil }
+            let storeURL = backupURL.appendingPathComponent(manifest.storeFileName)
+            return fileManager.fileExists(atPath: storeURL.path) ? storeURL : nil
+        }
+        return isLegacyMainStoreBackup(backupURL) && fileManager.fileExists(atPath: backupURL.path)
+            ? backupURL
+            : nil
+    }
+
+    /// Copies a backup into a writable working directory without mutating the backup itself.
+    static func materializeBackup(
+        _ backupURL: URL,
+        in destinationDirectoryURL: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        guard let sourceStoreURL = backupStoreURL(for: backupURL, fileManager: fileManager) else {
+            throw StorageBackupError.mainStoreMissing
+        }
+        try fileManager.createDirectory(
+            at: destinationDirectoryURL,
+            withIntermediateDirectories: true
+        )
+
+        let destinationStoreURL = destinationDirectoryURL.appendingPathComponent(databaseFileName)
+        try fileManager.copyItem(at: sourceStoreURL, to: destinationStoreURL)
+        for suffix in ["wal", "shm"] {
+            guard let sourceSidecar = backupSidecarURL(
+                for: sourceStoreURL,
+                suffix: suffix,
+                fileManager: fileManager
+            ) else {
+                continue
+            }
+            let destinationSidecar = URL(fileURLWithPath: destinationStoreURL.path + "-\(suffix)")
+            try fileManager.copyItem(at: sourceSidecar, to: destinationSidecar)
+        }
+        return destinationStoreURL
+    }
+
+    private static func canonicalDatabaseFileURLs(for mainStoreURL: URL) -> [URL] {
+        [
+            mainStoreURL,
+            URL(fileURLWithPath: mainStoreURL.path + "-wal"),
+            URL(fileURLWithPath: mainStoreURL.path + "-shm")
+        ]
+    }
+
+    private static func backupManifest(
+        at backupURL: URL,
+        fileManager: FileManager
+    ) -> StorageBackupManifest? {
+        let manifestURL = backupURL.appendingPathComponent(manifestFileName)
+        guard let data = try? Data(contentsOf: manifestURL) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let manifest = try? decoder.decode(StorageBackupManifest.self, from: data),
+              manifest.version == StorageBackupManifest.currentVersion,
+              manifest.includedFileNames.contains(manifest.storeFileName) else {
+            return nil
+        }
+
+        for fileName in manifest.includedFileNames {
+            guard fileName == (fileName as NSString).lastPathComponent,
+                  let expectedSize = manifest.byteCounts[fileName] else {
+                return nil
+            }
+            let fileURL = backupURL.appendingPathComponent(fileName)
+            guard let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
+                  (attributes[.size] as? NSNumber)?.int64Value == expectedSize else {
+                return nil
+            }
+        }
+        return manifest
+    }
+
+    private static func backupDate(
+        for backupURL: URL,
+        fileManager: FileManager = .default
+    ) -> Date {
+        if let manifest = backupManifest(at: backupURL, fileManager: fileManager) {
+            return manifest.createdAt
+        }
+        return (try? backupURL.resourceValues(forKeys: [.creationDateKey]).creationDate)
+            ?? Date.distantPast
+    }
+
+    private static func isLegacyMainStoreBackup(_ url: URL) -> Bool {
+        let name = url.lastPathComponent.lowercased()
+        guard name.hasPrefix("storycast_backup_"), name.hasSuffix(".store") else { return false }
+        return !name.hasSuffix(".wal.store") &&
+            !name.hasSuffix(".shm.store") &&
+            !name.contains(".store.")
+    }
+
+    private static func backupSidecarURL(
+        for mainStoreURL: URL,
+        suffix: String,
+        fileManager: FileManager
+    ) -> URL? {
+        let baseURL = mainStoreURL.deletingPathExtension()
+        let candidates = [
+            URL(fileURLWithPath: mainStoreURL.path + "-\(suffix)"),
+            mainStoreURL.appendingPathExtension(suffix),
+            baseURL.appendingPathExtension(suffix).appendingPathExtension("store")
+        ]
+        return candidates.first { fileManager.fileExists(atPath: $0.path) }
+    }
+
+    private static func removeBackup(at backupURL: URL, fileManager: FileManager) throws {
+        if backupURL.pathExtension == backupBundleExtension {
+            try fileManager.removeItem(at: backupURL)
+            return
+        }
+
+        let baseURL = backupURL.deletingPathExtension()
+        let candidates = [
+            backupURL,
+            URL(fileURLWithPath: backupURL.path + "-wal"),
+            URL(fileURLWithPath: backupURL.path + "-shm"),
+            backupURL.appendingPathExtension("wal"),
+            backupURL.appendingPathExtension("shm"),
+            baseURL.appendingPathExtension("wal").appendingPathExtension("store"),
+            baseURL.appendingPathExtension("shm").appendingPathExtension("store")
+        ]
+        for candidate in candidates where fileManager.fileExists(atPath: candidate.path) {
+            try fileManager.removeItem(at: candidate)
+        }
+    }
+
+    private static func backupByteCount(
+        at backupURL: URL,
+        fileManager: FileManager = .default
+    ) -> Int64? {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: backupURL.path, isDirectory: &isDirectory) else {
+            return nil
+        }
+        if !isDirectory.boolValue {
+            let attributes = try? fileManager.attributesOfItem(atPath: backupURL.path)
+            return (attributes?[.size] as? NSNumber)?.int64Value
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: backupURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]
+        ) else {
+            return nil
+        }
+        var total: Int64 = 0
+        while let fileURL = enumerator.nextObject() as? URL {
+            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+                  values.isRegularFile == true else {
+                continue
+            }
+            total += Int64(values.fileSize ?? 0)
+        }
+        return total
     }
     
     // MARK: - Cover Art Backup

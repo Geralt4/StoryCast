@@ -1,4 +1,5 @@
 import CloudKit
+import CryptoKit
 import Foundation
 import SwiftData
 
@@ -42,7 +43,6 @@ enum SyncInboxApplier {
             payloadData: payloadData,
             in: context
         )
-
         if type == .asset {
             let payload = try CloudSyncRecordCodec.decode(
                 CloudSyncAssetPayload.self,
@@ -51,52 +51,156 @@ enum SyncInboxApplier {
             )
             if isTombstoned(kind: .book, entityID: payload.bookID.uuidString, in: context) {
                 inbox.stateRaw = "applied"
+                try stageStaleRetryCleanup(for: inbox.id, in: context)
             } else if !shouldInstallAsset(payload, in: context) {
                 inbox.stateRaw = "applied"
+                try stageStaleRetryCleanup(for: inbox.id, in: context)
             } else {
-                guard let temporaryURL = CloudSyncRecordCodec.assetFileURL(from: record) else {
-                    inbox.stateRaw = "blocked"
+                let sourceURL = CloudSyncRecordCodec.assetFileURL(from: record)
+                let stagedURL: URL
+                if let sourceURL {
+                    do {
+                        stagedURL = try await stageIncomingAsset(sourceURL, for: payload)
+                    } catch {
+                        try recordRetry(for: inbox, error: error, in: context)
+                        try context.save()
+                        throw error
+                    }
+                    let retry = try retryState(for: inbox, in: context)
+                    if let oldStagedPath = retry.stagedAssetRelativePath,
+                       oldStagedPath != stagedURL.lastPathComponent {
+                        _ = try StorageCleanupCoordinator.stage(
+                            location: .syncInboxStaging,
+                            relativePath: oldStagedPath,
+                            in: context
+                        )
+                    }
+                    retry.stagedAssetRelativePath = stagedURL.lastPathComponent
+                    retry.claimID = retry.claimID ?? UUID()
+                    retry.nextRetryAt = nil
+                    retry.lastErrorMessage = nil
+                    retry.updatedAt = Date()
+                    try context.save()
+                } else if let retry = try existingRetryState(for: inbox.id, in: context),
+                          let stagedPath = retry.stagedAssetRelativePath,
+                          let existingURL = stagedAssetURL(for: stagedPath),
+                          FileManager.default.fileExists(atPath: existingURL.path) {
+                    stagedURL = existingURL
+                } else {
+                    try recordRetry(for: inbox, error: SyncInboxError.missingAsset(recordName: record.recordID.recordName), in: context)
                     try context.save()
                     throw SyncInboxError.missingAsset(recordName: record.recordID.recordName)
                 }
-                let installed = try await installAsset(payload: payload, temporaryURL: temporaryURL)
-                upsertAsset(payload: payload, localFileName: installed.lastPathComponent, in: context)
-                inbox.stateRaw = "applied"
+                do {
+                    let claimID = try existingRetryState(for: inbox.id, in: context)?.claimID
+                    let installed = try await installAsset(payload: payload, temporaryURL: stagedURL, claimID: claimID, in: context)
+                    upsertAsset(payload: payload, localFileName: installed.lastPathComponent, in: context)
+                    updateBookAssetReferences(payload: payload, localFileName: installed.lastPathComponent, in: context)
+                    inbox.stateRaw = "applied"
+                    if let retry = try existingRetryState(for: inbox.id, in: context) {
+                        if let stagedPath = retry.stagedAssetRelativePath {
+                            _ = try StorageCleanupCoordinator.stage(
+                                location: .syncInboxStaging,
+                                relativePath: stagedPath,
+                                in: context
+                            )
+                        }
+                        context.delete(retry)
+                    }
+                    try context.save()
+                    StorageCleanupCoordinator.drainPendingCleanup(in: context)
+                } catch {
+                    try recordRetry(for: inbox, error: error, in: context)
+                    try context.save()
+                    throw error
+                }
             }
+        } else {
+            try clearRetryState(for: inbox.id, in: context)
         }
 
         try context.save()
         if drainAfterStaging {
-            try drain(container: container)
+            try await drain(container: container)
         }
     }
 
-    static func drain(container: ModelContainer) throws {
+    static func drain(container: ModelContainer) async throws {
         let context = ModelContext(container)
         var madeProgress = true
 
         while madeProgress {
             madeProgress = false
+            let retryStates = try context.fetch(FetchDescriptor<SyncInboxRetryState>())
+            let retriesByRecordName = Dictionary(uniqueKeysWithValues: retryStates.map { ($0.recordName, $0) })
+            let now = Date()
             let pending = try context.fetch(FetchDescriptor<SyncInboxRecord>())
-                .filter { $0.stateRaw == "pending" }
+                .filter {
+                    $0.stateRaw == "pending" &&
+                    (retriesByRecordName[$0.id]?.nextRetryAt ?? .distantPast) <= now
+                }
                 .sorted { priority(for: $0.recordType) < priority(for: $1.recordType) }
 
             for inbox in pending {
+                let inboxID = inbox.id
                 do {
-                    if try apply(inbox, in: context) {
+                    if try await apply(inbox, in: context) {
                         inbox.stateRaw = "applied"
+                        if let retry = retriesByRecordName[inbox.id] {
+                            if let stagedPath = retry.stagedAssetRelativePath {
+                                _ = try StorageCleanupCoordinator.stage(
+                                    location: .syncInboxStaging,
+                                    relativePath: stagedPath,
+                                    in: context
+                                )
+                            }
+                            context.delete(retry)
+                        }
                         madeProgress = true
                     }
                 } catch {
-                    inbox.stateRaw = "blocked"
+                    context.rollback()
+                    let retryContext = ModelContext(container)
+                    guard let retryInbox = try retryContext.fetch(FetchDescriptor<SyncInboxRecord>()).first(where: { $0.id == inboxID }) else {
+                        throw error
+                    }
+                    try recordRetry(for: retryInbox, error: error, in: retryContext)
+                    try retryContext.save()
                     throw error
                 }
             }
-            if madeProgress { try context.save() }
+            if madeProgress {
+                try context.save()
+                StorageCleanupCoordinator.drainPendingCleanup(in: context)
+            }
+        }
+        StorageCleanupCoordinator.drainPendingCleanup(in: context)
+    }
+
+    static func retryableUnstagedAssetRecordNames(container: ModelContainer) -> [String] {
+        let context = ModelContext(container)
+        guard let inboxes = try? context.fetch(FetchDescriptor<SyncInboxRecord>()),
+              let retries = try? context.fetch(FetchDescriptor<SyncInboxRetryState>()) else {
+            return []
+        }
+        let retriesByRecordName = Dictionary(uniqueKeysWithValues: retries.map { ($0.recordName, $0) })
+        let now = Date()
+        return inboxes.compactMap { inbox in
+            let retry = retriesByRecordName[inbox.id]
+            let hasStagedAsset = retry?.stagedAssetRelativePath
+                .flatMap(stagedAssetURL(for:))
+                .map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+            guard inbox.recordType == CloudSyncRecordType.asset.rawValue,
+                  (inbox.stateRaw == "pending" || inbox.stateRaw == "blocked"),
+                  !hasStagedAsset,
+                  (retry?.nextRetryAt ?? .distantPast) <= now else {
+                return nil
+            }
+            return inbox.id
         }
     }
 
-    private static func apply(_ inbox: SyncInboxRecord, in context: ModelContext) throws -> Bool {
+    private static func apply(_ inbox: SyncInboxRecord, in context: ModelContext) async throws -> Bool {
         guard let type = CloudSyncRecordType(rawValue: inbox.recordType) else {
             throw CloudSyncRecordCodecError.unsupportedRecordType(inbox.recordType)
         }
@@ -145,6 +249,44 @@ enum SyncInboxApplier {
             return true
 
         case .asset:
+            let payload = try CloudSyncRecordCodec.decodePayload(CloudSyncAssetPayload.self, from: inbox.payloadData)
+            guard !isTombstoned(kind: .book, entityID: payload.bookID.uuidString, in: context) else {
+                return true
+            }
+            guard shouldInstallAsset(payload, in: context) else {
+                return true
+            }
+            let assets = try context.fetch(FetchDescriptor<SyncAsset>())
+            let matchingAsset = assets.first { $0.id == payload.assetID }
+            let hasVerifiedAsset = matchingAsset.map { asset in
+                guard asset.contentRevision >= payload.contentRevision,
+                      asset.sha256Hex == payload.sha256Hex,
+                      asset.localStateRaw == SyncAssetLocalState.verified.rawValue,
+                      let relativePath = asset.localRelativePath,
+                      StorageCleanupCoordinator.isSafeRelativePath(relativePath) else {
+                    return false
+                }
+                let directory = payload.kind == .audio
+                    ? StorageManager.shared.storyCastLibraryURL
+                    : StorageManager.shared.coverArtDirectoryURL
+                let fileURL = directory.appendingPathComponent(relativePath).standardizedFileURL
+                let root = directory.standardizedFileURL
+                guard fileURL.deletingLastPathComponent() == root else { return false }
+                let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+                return attrs?[.type] as? FileAttributeType == .typeRegular
+            } ?? false
+            if hasVerifiedAsset {
+                return true
+            }
+
+            guard let retry = try existingRetryState(for: inbox.id, in: context),
+                  let stagedPath = retry.stagedAssetRelativePath,
+                  let stagedURL = stagedAssetURL(for: stagedPath),
+                  FileManager.default.fileExists(atPath: stagedURL.path) else {
+                return false
+            }
+            let installed = try await installAsset(payload: payload, temporaryURL: stagedURL, claimID: retry.claimID, in: context)
+            upsertAsset(payload: payload, localFileName: installed.lastPathComponent, in: context)
             return true
 
         case .book:
@@ -188,13 +330,13 @@ enum SyncInboxApplier {
             let targetFolder: Folder
             if let folderID = payload.folderID {
                 if isTombstoned(kind: .folder, entityID: folderID.uuidString, in: context) {
-                    targetFolder = try FolderService.resolveUnfiledFolder(in: context)
+                    targetFolder = try FolderService.stageUnfiledFolder(in: context)
                 } else {
                     guard let folder = folders.first(where: { $0.id == folderID }) else { return false }
                     targetFolder = folder
                 }
             } else {
-                targetFolder = try FolderService.resolveUnfiledFolder(in: context)
+                targetFolder = try FolderService.stageUnfiledFolder(in: context)
             }
 
             guard shouldApply(
@@ -288,6 +430,9 @@ enum SyncInboxApplier {
 
         case .progress:
             let payload = try CloudSyncRecordCodec.decodePayload(CloudSyncProgressPayload.self, from: inbox.payloadData)
+            if isTombstoned(kind: .book, entityID: payload.action.bookID.uuidString, in: context) {
+                return true
+            }
             let books = try context.fetch(FetchDescriptor<Book>())
             guard let book = books.first(where: { $0.id == payload.action.bookID && !$0.isRemote }) else { return false }
             let heads = try context.fetch(FetchDescriptor<SyncProgressHead>())
@@ -324,38 +469,58 @@ enum SyncInboxApplier {
         case .tombstone:
             let payload = try CloudSyncRecordCodec.decodePayload(CloudSyncTombstonePayload.self, from: inbox.payloadData)
             upsertTombstone(payload, in: context)
-            try SyncDeletionCoordinator.discardReplicaState(
+            var pendingCleanups = Set(try SyncDeletionCoordinator.discardReplicaState(
                 entityKind: payload.entityKind,
                 entityID: payload.entityID,
                 in: context
-            )
+            ))
             switch payload.entityKind {
             case .book:
                 guard let bookID = UUID(uuidString: payload.entityID) else { return true }
                 let books = try context.fetch(FetchDescriptor<Book>())
                 if let book = books.first(where: { $0.id == bookID && !$0.isRemote }) {
-                    let audioURL = StorageManager.shared.storyCastLibraryURL.appendingPathComponent(book.localFileName)
-                    let coverURL = book.coverArtFileName.map { StorageManager.shared.coverArtDirectoryURL.appendingPathComponent($0) }
+                    if !book.localFileName.isEmpty {
+                        pendingCleanups.insert(PendingFileCleanup(
+                            location: .managedLibrary,
+                            relativePath: book.localFileName
+                        ))
+                    }
+                    if let coverArtFileName = book.coverArtFileName {
+                        pendingCleanups.insert(PendingFileCleanup(
+                            location: .coverArt,
+                            relativePath: coverArtFileName
+                        ))
+                    }
                     context.delete(book)
-                    try? FileManager.default.removeItem(at: audioURL)
-                    if let coverURL { try? FileManager.default.removeItem(at: coverURL) }
                 }
             case .folder:
                 guard let folderID = UUID(uuidString: payload.entityID) else { return true }
                 let folders = try context.fetch(FetchDescriptor<Folder>())
                 if let folder = folders.first(where: { $0.id == folderID && !$0.isSystem }) {
-                    let unfiled = try FolderService.resolveUnfiledFolder(in: context)
+                    let unfiled = try FolderService.stageUnfiledFolder(in: context)
                     for book in folder.books { book.folder = unfiled }
                     context.delete(folder)
                 }
             case .generation, .chapter, .asset, .progress, .tombstone:
                 break
             }
+            for cleanup in pendingCleanups {
+                _ = try StorageCleanupCoordinator.stage(
+                    location: cleanup.location,
+                    relativePath: cleanup.relativePath,
+                    in: context
+                )
+            }
             return true
         }
     }
 
-    private static func installAsset(payload: CloudSyncAssetPayload, temporaryURL: URL) async throws -> URL {
+    private static func installAsset(
+        payload: CloudSyncAssetPayload,
+        temporaryURL: URL,
+        claimID: UUID?,
+        in context: ModelContext
+    ) async throws -> URL {
         switch payload.kind {
         case .audio:
             try await StorageManager.shared.setupStoryCastLibraryDirectory()
@@ -363,11 +528,7 @@ enum SyncInboxApplier {
             try await StorageManager.shared.setupCoverArtDirectory()
         }
 
-        let directory = payload.kind == .audio
-            ? StorageManager.shared.storyCastLibraryURL
-            : StorageManager.shared.coverArtDirectoryURL
-        let suffix = payload.pathExtension.isEmpty ? "" : ".\(payload.pathExtension.lowercased())"
-        let destination = directory.appendingPathComponent("icloud-\(payload.assetID.uuidString.lowercased())\(suffix)")
+        let destination = try assetDestinationURL(for: payload, claimID: claimID, in: context)
 
         return try await Task.detached(priority: .utility) {
             let fingerprint = try SyncFileHasher.fingerprint(of: temporaryURL)
@@ -381,7 +542,8 @@ enum SyncInboxApplier {
                 if existing == fingerprint { return destination }
             }
 
-            let staging = directory.appendingPathComponent(".icloud-\(UUID().uuidString).tmp")
+            let staging = destination.deletingLastPathComponent()
+                .appendingPathComponent(".icloud-\(UUID().uuidString).tmp")
             defer { try? manager.removeItem(at: staging) }
             try manager.copyItem(at: temporaryURL, to: staging)
             if manager.fileExists(atPath: destination.path) {
@@ -391,6 +553,56 @@ enum SyncInboxApplier {
             }
             return destination
         }.value
+    }
+
+    private static func assetDestinationURL(
+        for payload: CloudSyncAssetPayload,
+        claimID: UUID?,
+        in context: ModelContext
+    ) throws -> URL {
+        guard let pathExtension = safePathExtension(payload.pathExtension) else {
+            throw SyncInboxError.invalidAsset(recordName: payload.assetID.uuidString)
+        }
+        let directory = payload.kind == .audio
+            ? StorageManager.shared.storyCastLibraryURL
+            : StorageManager.shared.coverArtDirectoryURL
+        let suffix = pathExtension.isEmpty ? "" : ".\(pathExtension)"
+        let defaultName = "icloud-\(payload.assetID.uuidString.lowercased())\(suffix)"
+        let fallbackName: String
+        if let claimID {
+            fallbackName = "icloud-sync-\(payload.assetID.uuidString.lowercased())-\(claimID.uuidString.prefix(8).lowercased())\(suffix)"
+        } else {
+            fallbackName = "icloud-sync-\(payload.assetID.uuidString.lowercased())\(suffix)"
+        }
+        let assets = try context.fetch(FetchDescriptor<SyncAsset>())
+        let books = try context.fetch(FetchDescriptor<Book>())
+        let existingPath = assets.first(where: { $0.id == payload.assetID })?.localRelativePath
+        var candidateNames: [String] = []
+        for candidateName in [existingPath, defaultName, fallbackName].compactMap({ $0 })
+        where !candidateNames.contains(candidateName) {
+            candidateNames.append(candidateName)
+        }
+
+        for candidateName in candidateNames where StorageCleanupCoordinator.isSafeRelativePath(candidateName) {
+            let referencedByAnotherBook = books.contains { book in
+                guard !book.isRemote, book.id != payload.bookID else { return false }
+                switch payload.kind {
+                case .audio:
+                    return book.localFileName == candidateName
+                case .coverArt:
+                    return book.coverArtFileName == candidateName
+                }
+            }
+            let referencedByAnotherAsset = assets.contains {
+                $0.id != payload.assetID &&
+                $0.kindRaw == payload.kind.rawValue &&
+                $0.localRelativePath == candidateName
+            }
+            guard !referencedByAnotherBook, !referencedByAnotherAsset else { continue }
+            return directory.appendingPathComponent(candidateName)
+        }
+
+        throw SyncInboxError.invalidAsset(recordName: payload.assetID.uuidString)
     }
 
     private static func upsertInbox(
@@ -410,6 +622,176 @@ enum SyncInboxApplier {
         let inbox = SyncInboxRecord(id: id, recordType: recordType, payloadData: payloadData)
         context.insert(inbox)
         return inbox
+    }
+
+    private static func safePathExtension(_ value: String) -> String? {
+        let extensionValue = value.lowercased()
+        guard extensionValue.unicodeScalars.allSatisfy({
+            CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "+-")).contains($0)
+        }) else {
+            return nil
+        }
+        return extensionValue
+    }
+
+    private static var incomingAssetStagingDirectoryURL: URL {
+        let applicationSupportURL = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        return applicationSupportURL.appendingPathComponent("StoryCast/SyncInboxAssets", isDirectory: true)
+    }
+
+    private static func stageIncomingAsset(
+        _ sourceURL: URL,
+        for payload: CloudSyncAssetPayload
+    ) async throws -> URL {
+        guard let pathExtension = safePathExtension(payload.pathExtension) else {
+            throw SyncInboxError.invalidAsset(recordName: payload.assetID.uuidString)
+        }
+        let suffix = pathExtension.isEmpty ? "" : ".\(pathExtension)"
+        let destination = incomingAssetStagingDirectoryURL
+            .appendingPathComponent("asset-\(payload.assetID.uuidString.lowercased())-\(payload.contentRevision)\(suffix)")
+
+        return try await Task.detached(priority: .utility) {
+            let manager = FileManager.default
+            try manager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let stagingURL = destination.deletingLastPathComponent()
+                .appendingPathComponent(".asset-\(UUID().uuidString).tmp")
+            defer { try? manager.removeItem(at: stagingURL) }
+
+            try manager.copyItem(at: sourceURL, to: stagingURL)
+            if manager.fileExists(atPath: destination.path) {
+                let attributes = try manager.attributesOfItem(atPath: destination.path)
+                guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                    throw SyncInboxError.invalidAsset(recordName: payload.assetID.uuidString)
+                }
+                _ = try manager.replaceItemAt(destination, withItemAt: stagingURL)
+            } else {
+                try manager.moveItem(at: stagingURL, to: destination)
+            }
+            return destination
+        }.value
+    }
+
+    private static func stagedAssetURL(for relativePath: String) -> URL? {
+        guard StorageCleanupCoordinator.isSafeRelativePath(relativePath) else { return nil }
+        let root = incomingAssetStagingDirectoryURL.standardizedFileURL
+        let fileURL = root.appendingPathComponent(relativePath).standardizedFileURL
+        guard fileURL.deletingLastPathComponent() == root else { return nil }
+        return fileURL
+    }
+
+    private static func removeStagedAsset(at url: URL) {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular else {
+            return
+        }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private static func clearRetryState(for recordName: String, in context: ModelContext) throws {
+        let states = try context.fetch(FetchDescriptor<SyncInboxRetryState>())
+        for state in states where state.recordName == recordName {
+            if let stagedPath = state.stagedAssetRelativePath {
+                _ = try StorageCleanupCoordinator.stage(
+                    location: .syncInboxStaging,
+                    relativePath: stagedPath,
+                    in: context
+                )
+            }
+            context.delete(state)
+        }
+    }
+
+    private static func stageStaleRetryCleanup(for recordName: String, in context: ModelContext) throws {
+        if let retry = try existingRetryState(for: recordName, in: context) {
+            if let stagedPath = retry.stagedAssetRelativePath {
+                _ = try StorageCleanupCoordinator.stage(
+                    location: .syncInboxStaging,
+                    relativePath: stagedPath,
+                    in: context
+                )
+            }
+            context.delete(retry)
+        }
+    }
+
+    private static func updateBookAssetReferences(
+        payload: CloudSyncAssetPayload,
+        localFileName: String,
+        in context: ModelContext
+    ) {
+        let books = (try? context.fetch(FetchDescriptor<Book>())) ?? []
+        for book in books where book.id == payload.bookID && !book.isRemote {
+            switch payload.kind {
+            case .audio:
+                if book.localFileName != localFileName {
+                    book.localFileName = localFileName
+                    book.updateSearchFields()
+                }
+            case .coverArt:
+                if book.coverArtFileName != localFileName {
+                    book.coverArtFileName = localFileName
+                }
+            }
+        }
+    }
+
+    private static func existingRetryState(
+        for recordName: String,
+        in context: ModelContext
+    ) throws -> SyncInboxRetryState? {
+        try context.fetch(FetchDescriptor<SyncInboxRetryState>()).first { $0.recordName == recordName }
+    }
+
+    private static func retryState(
+        for inbox: SyncInboxRecord,
+        in context: ModelContext
+    ) throws -> SyncInboxRetryState {
+        let fingerprint = SHA256.hash(data: inbox.payloadData)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let state = try existingRetryState(for: inbox.id, in: context) ?? {
+            let state = SyncInboxRetryState(recordName: inbox.id, deliveryFingerprint: fingerprint)
+            context.insert(state)
+            return state
+        }()
+        if state.deliveryFingerprint != fingerprint {
+            if let oldStagedPath = state.stagedAssetRelativePath {
+                _ = try StorageCleanupCoordinator.stage(
+                    location: .syncInboxStaging,
+                    relativePath: oldStagedPath,
+                    in: context
+                )
+            }
+            state.deliveryFingerprint = fingerprint
+            state.attemptCount = 0
+            state.stagedAssetRelativePath = nil
+            state.claimID = nil
+        }
+        return state
+    }
+
+    private static func recordRetry(
+        for inbox: SyncInboxRecord,
+        error: Error,
+        in context: ModelContext
+    ) throws {
+        let state = try retryState(for: inbox, in: context)
+        state.attemptCount += 1
+        state.lastAttemptAt = Date()
+        state.lastErrorMessage = error.localizedDescription
+        state.nextRetryAt = Date().addingTimeInterval(retryDelay(for: state.attemptCount))
+        state.updatedAt = Date()
+        inbox.stateRaw = "pending"
+    }
+
+    private static func retryDelay(for attemptCount: Int) -> TimeInterval {
+        min(pow(2, Double(max(0, attemptCount - 1))), 300)
     }
 
     private static func upsertAsset(
@@ -527,8 +909,29 @@ enum SyncInboxApplier {
             return true
         }
         if payload.sha256Hex == local.sha256Hex {
-            local.cloudStateRaw = SyncAssetCloudState.published.rawValue
-            return false
+            let fileIsPresent: Bool
+            if let relativePath = local.localRelativePath,
+               StorageCleanupCoordinator.isSafeRelativePath(relativePath) {
+                let directory = payload.kind == .audio
+                    ? StorageManager.shared.storyCastLibraryURL
+                    : StorageManager.shared.coverArtDirectoryURL
+                let fileURL = directory.appendingPathComponent(relativePath).standardizedFileURL
+                let root = directory.standardizedFileURL
+                if fileURL.deletingLastPathComponent() == root,
+                   let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+                   attrs[.type] as? FileAttributeType == .typeRegular {
+                    fileIsPresent = true
+                } else {
+                    fileIsPresent = false
+                }
+            } else {
+                fileIsPresent = false
+            }
+            if fileIsPresent {
+                local.cloudStateRaw = SyncAssetCloudState.published.rawValue
+                return false
+            }
+            return true
         }
         let localDate = local.lastVerifiedAt ?? .distantPast
         if payload.readyAt != localDate {
@@ -605,13 +1008,13 @@ enum SyncInboxApplier {
 
     private static func priority(for recordType: String) -> Int {
         switch CloudSyncRecordType(rawValue: recordType) {
-        case .generation: 0
-        case .folder: 1
-        case .asset: 2
-        case .book: 3
-        case .chapter: 4
-        case .progress: 5
-        case .tombstone: 6
+        case .tombstone: 0
+        case .generation: 1
+        case .folder: 2
+        case .asset: 3
+        case .book: 4
+        case .chapter: 5
+        case .progress: 6
         case nil: 99
         }
     }

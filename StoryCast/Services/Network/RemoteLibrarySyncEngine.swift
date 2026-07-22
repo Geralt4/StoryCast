@@ -126,6 +126,11 @@ enum RemoteLibrarySyncEngine {
         let serverId = server.id
         let serverURL = server.normalizedURL
         let context = ModelContext(container)
+        var serverDescriptor = FetchDescriptor<ABSServer>(predicate: #Predicate { $0.id == serverId })
+        serverDescriptor.fetchLimit = 1
+        guard let persistedServer = try context.fetch(serverDescriptor).first, persistedServer.isActive else {
+            return []
+        }
         let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.serverId == serverId })
         let existingBooks = try context.fetch(descriptor)
         let existingByRemoteId = Dictionary(uniqueKeysWithValues: existingBooks.compactMap { book -> (String, Book)? in

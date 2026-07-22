@@ -70,14 +70,16 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     }
 
     @MainActor
-    func testMigrationPlanSupportsV1ThroughV5() {
+    func testMigrationPlanSupportsV1ThroughV6() {
         let schemas = StoryCastMigrationPlan.schemas
-        XCTAssertEqual(schemas.count, 5, "Migration plan should support V1 through V5")
+        XCTAssertEqual(schemas.count, 7, "Migration plan should support V1 through V6 plus its V1 bridge")
         XCTAssertTrue(schemas.contains { $0 == SchemaV1.self })
+        XCTAssertTrue(schemas.contains { $0 == SchemaV1MigrationBridge.self })
         XCTAssertTrue(schemas.contains { $0 == SchemaV2.self })
         XCTAssertTrue(schemas.contains { $0 == SchemaV3.self })
         XCTAssertTrue(schemas.contains { $0 == SchemaV4.self })
         XCTAssertTrue(schemas.contains { $0 == SchemaV5.self })
+        XCTAssertTrue(schemas.contains { $0 == SchemaV6.self })
     }
 
     @MainActor
@@ -87,6 +89,15 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
         XCTAssertTrue(models.contains(where: { $0 == SyncCloudRecordState.self }))
         XCTAssertTrue(models.contains(where: { $0 == SyncReplicaUploadMarker.self }))
         XCTAssertTrue(models.contains(where: { $0 == SyncAssetRetentionState.self }))
+    }
+
+    @MainActor
+    func testSchemaV6AddsDurableMutationAndCleanupJournals() {
+        let models = SchemaV6.models
+        XCTAssertTrue(models.contains(where: { $0 == StorageCleanupJournalEntry.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncLocalMutation.self }))
+        XCTAssertTrue(models.contains(where: { $0 == SyncInboxRetryState.self }))
+        XCTAssertTrue(models.contains(where: { $0 == ServerRemovalJournalEntry.self }))
     }
 
     @MainActor
@@ -113,10 +124,10 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
             let nextSchema = schemas[i + 1]
             
             let currentModels = currentSchema.models
-                .map { String(describing: $0) }
+                .map { String(reflecting: $0) }
                 .sorted()
             let nextModels = nextSchema.models
-                .map { String(describing: $0) }
+                .map { String(reflecting: $0) }
                 .sorted()
             
             XCTAssertNotEqual(
