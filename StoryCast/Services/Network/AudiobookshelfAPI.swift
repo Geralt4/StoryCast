@@ -28,6 +28,14 @@ actor AudiobookshelfAPI {
         decoder = JSONDecoder()
     }
 
+    /// Test seam: allows injecting a custom URLSession (e.g. one configured with
+    /// a `URLProtocol` stub) for unit tests that exercise the 401 path.
+    /// Not exposed to production callers — keep `init()` private.
+    init(session: URLSession) {
+        self.session = session
+        decoder = JSONDecoder()
+    }
+
     private func ensureNetworkConnected() async throws {
         guard await NetworkMonitor.shared.isConnected else { throw APIError.serverUnreachable }
     }
@@ -35,7 +43,7 @@ actor AudiobookshelfAPI {
     func checkServerStatus(baseURL: String) async throws {
         let url = try makeURL(base: baseURL, path: "/status")
         let (data, response) = try await performRequest(URLRequest(url: url))
-        try validateResponse(response, data: data)
+        try await validateResponse(response, data: data, request: URLRequest(url: url))
         let status = try decode(ABSServerStatus.self, from: data)
         guard status.isInit else { throw APIError.serverNotInitialized }
     }
@@ -47,14 +55,15 @@ actor AudiobookshelfAPI {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(ABSLoginRequest(username: username, password: password))
         let (data, response) = try await performRequest(request)
-        try validateResponse(response, data: data)
+        try await validateResponse(response, data: data, request: request)
         return try decode(ABSLoginResponse.self, from: data)
     }
 
     func authorize(baseURL: String, token: String) async throws -> ABSUserResponse {
         let url = try makeURL(base: baseURL, path: "/api/me")
-        let (data, response) = try await performRequest(authorizedRequest(url: url, token: token))
-        try validateResponse(response, data: data)
+        let request = authorizedRequest(url: url, token: token)
+        let (data, response) = try await performRequest(request)
+        try await validateResponse(response, data: data, request: request)
         return try decode(ABSUserResponse.self, from: data)
     }
 
@@ -82,8 +91,9 @@ actor AudiobookshelfAPI {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw APIError.invalidURL }
         components.queryItems = [URLQueryItem(name: "expanded", value: "1"), URLQueryItem(name: "include", value: "progress")]
         guard let finalURL = components.url else { throw APIError.invalidURL }
-        let (data, response) = try await performRequest(authorizedRequest(url: finalURL, token: token))
-        try validateResponse(response, data: data)
+        let request = authorizedRequest(url: finalURL, token: token)
+        let (data, response) = try await performRequest(request)
+        try await validateResponse(response, data: data, request: request)
         return try decode(ABSLibraryItem.self, from: data)
     }
 
@@ -93,7 +103,7 @@ actor AudiobookshelfAPI {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(await ABSPlayRequest.makeDefault())
         let (data, response) = try await performRequest(request)
-        try validateResponse(response, data: data)
+        try await validateResponse(response, data: data, request: request)
         return try decode(ABSPlaybackSession.self, from: data)
     }
 
@@ -113,14 +123,15 @@ actor AudiobookshelfAPI {
         request.httpBody = try JSONEncoder().encode(ABSSessionSyncRequest(currentTime: currentTime, timeListened: timeListened, duration: duration))
         let (data, response) = try await performRequest(request)
         if isClose, let http = response as? HTTPURLResponse, http.statusCode == 404 { return }
-        try validateResponse(response, data: data)
+        try await validateResponse(response, data: data, request: request)
     }
 
     func fetchProgress(baseURL: String, token: String, itemId: String) async throws -> ABSMediaProgress? {
         let url = try makeURL(base: baseURL, path: "/api/me/progress/\(itemId)")
-        let (data, response) = try await performRequest(authorizedRequest(url: url, token: token))
+        let request = authorizedRequest(url: url, token: token)
+        let (data, response) = try await performRequest(request)
         if let http = response as? HTTPURLResponse, http.statusCode == 404 { return nil }
-        try validateResponse(response, data: data)
+        try await validateResponse(response, data: data, request: request)
         return try decode(ABSMediaProgress.self, from: data)
     }
 
@@ -131,7 +142,7 @@ actor AudiobookshelfAPI {
         let progress = duration > 0 ? min(1.0, max(0.0, currentTime / duration)) : 0
         request.httpBody = try JSONEncoder().encode(ABSProgressUpdateRequest(duration: duration, progress: progress, currentTime: currentTime, isFinished: isFinished))
         let (data, response) = try await performRequest(request)
-        try validateResponse(response, data: data)
+        try await validateResponse(response, data: data, request: request)
     }
 
     func coverArtURL(baseURL: String, token: String, itemId: String, size: Int = 400) -> URL? {
@@ -148,8 +159,9 @@ actor AudiobookshelfAPI {
 
     func fetchCoverArt(baseURL: String, token: String, itemId: String, size: Int = 400) async throws -> Data {
         guard let url = coverArtURL(baseURL: baseURL, token: token, itemId: itemId, size: size) else { throw APIError.invalidURL }
-        let (data, response) = try await performRequest(authorizedRequest(url: url, token: token))
-        try validateResponse(response, data: data)
+        let request = authorizedRequest(url: url, token: token)
+        let (data, response) = try await performRequest(request)
+        try await validateResponse(response, data: data, request: request)
         return data
     }
 
@@ -185,8 +197,9 @@ actor AudiobookshelfAPI {
     }
 
     private func authenticatedGet<T: Decodable>(url: URL, token: String, baseURL: String) async throws -> T {
-        let (data, response) = try await performRequest(authorizedRequest(url: url, token: token))
-        try validateResponse(response, data: data)
+        let request = authorizedRequest(url: url, token: token)
+        let (data, response) = try await performRequest(request)
+        try await validateResponse(response, data: data, request: request)
         return try decode(T.self, from: data)
     }
 
@@ -201,17 +214,46 @@ actor AudiobookshelfAPI {
         }
     }
 
-    private func validateResponse(_ response: URLResponse, data: Data) throws {
+    private func validateResponse(_ response: URLResponse, data: Data, request: URLRequest) async throws {
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         switch http.statusCode {
         case 200...299: return
         case 401:
-            // Handle token cleanup asynchronously
-            if let url = (response as? HTTPURLResponse)?.url?.host {
-                Task { await handleUnauthorized(for: url) }
+            // Derive the full normalized origin (scheme://host:port) from the
+            // request URL. Using just `response.url?.host` would produce a key
+            // like "abs.example.com" that cannot match the saved key
+            // "https://abs.example.com:13378" used by AudiobookshelfAuth.
+            // Await the cleanup so the Keychain entry is actually removed
+            // before the unauthorized error propagates to the caller.
+            if let origin = Self.normalizedOrigin(from: request.url) {
+                await handleUnauthorized(for: origin)
             }
             throw APIError.unauthorized
         default: throw APIError.httpError(statusCode: http.statusCode)
+        }
+    }
+
+    /// Builds a keychain-compatible origin string ("https://abs.example.com:13378")
+    /// from a request URL. Returns nil if the URL has no scheme or host.
+    /// Defaults the scheme to https if missing, matching `AudiobookshelfURLValidator`.
+    private static func normalizedOrigin(from url: URL?) -> String? {
+        guard let url else { return nil }
+        guard let host = url.host, !host.isEmpty else { return nil }
+        let scheme = (url.scheme?.isEmpty == false ? url.scheme : "https")?.lowercased() ?? "https"
+        let portPart: String
+        if let port = url.port, !Self.isDefaultPort(port, for: scheme) {
+            portPart = ":\(port)"
+        } else {
+            portPart = ""
+        }
+        return "\(scheme)://\(host)\(portPart)"
+    }
+
+    private static func isDefaultPort(_ port: Int, for scheme: String) -> Bool {
+        switch scheme {
+        case "https": return port == 443
+        case "http":  return port == 80
+        default:      return false
         }
     }
 
