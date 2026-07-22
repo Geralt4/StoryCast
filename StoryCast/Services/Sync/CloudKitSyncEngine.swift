@@ -74,7 +74,8 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
         engine.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: zoneID))])
         try await engine.sendChanges()
         try await engine.fetchChanges()
-        try SyncInboxApplier.drain(container: modelContainer)
+        try await SyncInboxApplier.drain(container: modelContainer)
+        try await retryUnstagedInboxAssets()
     }
 
     func sendPendingChanges() async throws {
@@ -91,7 +92,8 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
 
     func fetchChanges() async throws {
         try await engine.fetchChanges()
-        try SyncInboxApplier.drain(container: modelContainer)
+        try await SyncInboxApplier.drain(container: modelContainer)
+        try await retryUnstagedInboxAssets()
     }
 
     func cancel() async {
@@ -128,7 +130,8 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
                 }
             }
             do {
-                try SyncInboxApplier.drain(container: modelContainer)
+                try await SyncInboxApplier.drain(container: modelContainer)
+                try await retryUnstagedInboxAssets()
             } catch {
                 recordSyncError(error.localizedDescription)
                 AppLogger.sync.error("Failed to drain CloudKit inbox: \(error.localizedDescription, privacy: .private)")
@@ -157,6 +160,28 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
         @unknown default:
             AppLogger.sync.info("Received a newer CloudKit sync event that this version does not handle")
         }
+    }
+
+    private func retryUnstagedInboxAssets() async throws {
+        let recordNames = SyncInboxApplier.retryableUnstagedAssetRecordNames(container: modelContainer)
+        guard !recordNames.isEmpty else { return }
+
+        for recordName in recordNames {
+            let recordID = CKRecord.ID(recordName: recordName, zoneID: zoneID)
+            do {
+                let record = try await cloudContainer.privateCloudDatabase.record(for: recordID)
+                try await SyncInboxApplier.stage(
+                    record: record,
+                    container: modelContainer,
+                    drainAfterStaging: false
+                )
+            } catch {
+                recordSyncError(error.localizedDescription)
+                AppLogger.sync.error("Failed to retry inbox asset \(recordName, privacy: .private): \(error.localizedDescription, privacy: .private)")
+            }
+        }
+
+        try await SyncInboxApplier.drain(container: modelContainer)
     }
 
     func nextRecordZoneChangeBatch(
@@ -275,9 +300,17 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
                   let relativePath = asset.localRelativePath else {
                 throw CloudKitSyncEngineError.missingLocalAsset(operation.subjectID)
             }
-            let fileURL = payload.kind == .audio
-                ? StorageManager.shared.storyCastLibraryURL.appendingPathComponent(relativePath)
-                : StorageManager.shared.coverArtDirectoryURL.appendingPathComponent(relativePath)
+            guard StorageCleanupCoordinator.isSafeRelativePath(relativePath) else {
+                throw CloudKitSyncEngineError.missingLocalAsset(operation.subjectID)
+            }
+            let directoryURL = payload.kind == .audio
+                ? StorageManager.shared.storyCastLibraryURL
+                : StorageManager.shared.coverArtDirectoryURL
+            let root = directoryURL.standardizedFileURL
+            let fileURL = root.appendingPathComponent(relativePath).standardizedFileURL
+            guard fileURL.deletingLastPathComponent() == root else {
+                throw CloudKitSyncEngineError.missingLocalAsset(operation.subjectID)
+            }
             asset.cloudStateRaw = SyncAssetCloudState.uploading.rawValue
             return try CloudSyncRecordCodec.makeAssetRecord(
                 payload: payload,

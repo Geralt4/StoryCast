@@ -5,9 +5,7 @@ import os
 /// SwiftData model representing a configured Audiobookshelf server.
 /// The API token is stored in the iOS Keychain (via AudiobookshelfAuth);
 /// only a non-sensitive reference is kept here.
-@Model
-nonisolated
-final class ABSServer {
+@Model nonisolated final class ABSServer {
     @Attribute(.unique) var id: UUID
     var name: String
     /// Base URL of the server, e.g. "https://abs.home.local:13378"

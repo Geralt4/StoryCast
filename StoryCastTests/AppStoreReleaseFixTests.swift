@@ -21,22 +21,6 @@ nonisolated final class AppStoreReleaseFixTests: XCTestCase {
         XCTAssertEqual(manager.debugDownloadCount, 0, "Download should be removed after cancellation")
     }
 
-    // MARK: - B4: makePersistentRecoveryContainer uses backup URL
-
-    func testMakePersistentRecoveryContainerReturnsNilWhenNoBackupsExist() {
-        let tempDir = StorageBackupManager.backupDirectoryURL
-        if FileManager.default.fileExists(atPath: tempDir.path) {
-            if let contents = try? FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil) {
-                for file in contents where file.pathExtension == "store" && !file.lastPathComponent.contains(".store.") {
-                    try? FileManager.default.removeItem(at: file)
-                }
-            }
-        }
-
-        let container = AppBootstrap.makePersistentRecoveryContainer()
-        XCTAssertNil(container, "makePersistentRecoveryContainer should return nil when no backups exist")
-    }
-
     // MARK: - B2+B3: Background completion handler storage and invocation
 
     @MainActor

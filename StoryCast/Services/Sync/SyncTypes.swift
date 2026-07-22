@@ -145,8 +145,8 @@ nonisolated struct SyncBookSnapshot: Codable, Equatable, Sendable {
 
     @MainActor
     init?(book: Book) {
-        let localFileName = book.localFileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !book.isRemote, !localFileName.isEmpty else {
+        let localFileName = book.localFileName
+        guard !book.isRemote, StorageCleanupCoordinator.isSafeRelativePath(localFileName) else {
             return nil
         }
         self.bookID = book.id

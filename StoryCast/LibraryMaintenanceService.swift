@@ -10,18 +10,21 @@ enum LibraryMaintenanceService {
 
     static func ensureUnfiledFolderExists(container: ModelContainer) throws {
         let context = ModelContext(container)
-        _ = try MaintenanceSupport.resolveUnfiledFolder(in: context)
+        let resolution = try MaintenanceSupport.resolveUnfiledFolder(in: context)
+        if resolution.created { try context.save() }
     }
 
     @discardableResult
     static func repairLibraryIntegrity(container: ModelContainer, libraryURL: URL = StorageManager.shared.storyCastLibraryURL) async -> RepairResult {
-        let result = await Task(priority: .utility) { IntegrityRepairPass.run(container: container, libraryURL: libraryURL) }.value
+        let deviceID = try? await SyncDeviceIdentity.shared.identifier()
+        let result = await Task(priority: .utility) {
+            IntegrityRepairPass.run(container: container, libraryURL: libraryURL, deviceID: deviceID)
+        }.value
         switch result {
         case .failure(let error):
             AppLogger.app.error("Library integrity repair failed: \(error.localizedDescription)")
             return RepairResult(staleRemovedCount: 0, reassignedToUnfiledCount: 0, createdUnfiledFolder: false)
         case .success(let payload):
-            for fileName in payload.coverArtFileNames { await StorageManager.shared.deleteCoverArt(fileName: fileName) }
             if payload.result.staleRemovedCount > 0 || payload.result.reassignedToUnfiledCount > 0 {
                 AppLogger.app.info("Library integrity repair completed: removed \(payload.result.staleRemovedCount) stale books, reassigned \(payload.result.reassignedToUnfiledCount) books to Unfiled")
             }
@@ -44,14 +47,15 @@ enum LibraryMaintenanceService {
 
     @discardableResult
     nonisolated static func deduplicateExistingBooks(container: ModelContainer, libraryURL: URL = StorageManager.shared.storyCastLibraryURL) async -> DeduplicationResult {
-        let result = await Task.detached(priority: .utility) { DeduplicationPass.run(container: container, libraryURL: libraryURL) }.value
+        let deviceID = try? await SyncDeviceIdentity.shared.identifier()
+        let result = await Task.detached(priority: .utility) { @MainActor in
+            DeduplicationPass.run(container: container, libraryURL: libraryURL, deviceID: deviceID)
+        }.value
         switch result {
         case .failure(let error):
             AppLogger.app.error("Library deduplication failed: \(error.localizedDescription)")
             return DeduplicationResult(removedCount: 0, completed: false)
         case .success(let payload):
-            for fileName in payload.localFileNames { MaintenanceSupport.removeManagedLibraryFile(named: fileName, libraryURL: libraryURL) }
-            for fileName in payload.coverArtFileNames { await StorageManager.shared.deleteCoverArt(fileName: fileName) }
             if payload.removedCount == 0 { AppLogger.app.info("Library deduplication completed: no duplicates found") }
             else { AppLogger.app.info("Library deduplication removed \(payload.removedCount) duplicate books") }
             return DeduplicationResult(removedCount: payload.removedCount, completed: true)
@@ -80,168 +84,269 @@ enum LibraryMaintenanceService {
 }
 
 private enum IntegrityRepairPass {
-    struct Payload { let result: LibraryMaintenanceService.RepairResult; let coverArtFileNames: [String] }
+    struct Payload { let result: LibraryMaintenanceService.RepairResult }
 
-    static func run(container: ModelContainer, libraryURL: URL) -> Result<Payload, Error> {
+    @MainActor
+    static func run(
+        container: ModelContainer,
+        libraryURL: URL,
+        deviceID: String?
+    ) -> Result<Payload, Error> {
+        let context = ModelContext(container)
         do {
-            let context = ModelContext(container)
             let resolution = try MaintenanceSupport.resolveUnfiledFolder(in: context)
             let books = try context.fetch(FetchDescriptor<Book>())
-            var coverArtFileNamesToDelete = Set<String>()
+            let syncedBookIDs = try MaintenanceSupport.syncedBookIDs(in: context)
             var booksToDelete: [Book] = []
             var reassignedToUnfiledCount = 0
 
             for book in books {
                 if MaintenanceSupport.shouldValidateLocalLibraryFile(for: book) {
-                    guard let localFileURL = MaintenanceSupport.managedLibraryFileURL(for: book.localFileName, libraryURL: libraryURL),
-                          FileManager.default.fileExists(atPath: localFileURL.path) else {
+                    guard let localFileURL = MaintenanceSupport.managedLibraryFileURL(for: book.localFileName, libraryURL: libraryURL) else {
                         booksToDelete.append(book)
-                        if let coverArtFileName = book.coverArtFileName { coverArtFileNamesToDelete.insert(coverArtFileName) }
+                        continue
+                    }
+                    switch MaintenanceSupport.fileStatus(at: localFileURL) {
+                    case .regular:
+                        break
+                    case .missingOrInvalid:
+                        if !syncedBookIDs.contains(book.id) {
+                            booksToDelete.append(book)
+                        }
+                        continue
+                    case .unavailable:
                         continue
                     }
                 }
                 if book.folder == nil { book.folder = resolution.folder; reassignedToUnfiledCount += 1 }
             }
 
-            for book in booksToDelete { context.delete(book) }
-            if reassignedToUnfiledCount > 0 || !booksToDelete.isEmpty { try context.save() }
+            for book in booksToDelete {
+                try LibraryDeletionTransaction.stageBookDeletion(book, deviceID: deviceID, in: context)
+            }
+            if resolution.created || reassignedToUnfiledCount > 0 || !booksToDelete.isEmpty {
+                try context.save()
+            }
+
+            StorageCleanupCoordinator.drainPendingCleanup(in: context)
 
             return .success(Payload(
-                result: LibraryMaintenanceService.RepairResult(staleRemovedCount: booksToDelete.count, reassignedToUnfiledCount: reassignedToUnfiledCount, createdUnfiledFolder: resolution.created),
-                coverArtFileNames: Array(coverArtFileNamesToDelete)
+                result: LibraryMaintenanceService.RepairResult(
+                    staleRemovedCount: booksToDelete.count,
+                    reassignedToUnfiledCount: reassignedToUnfiledCount,
+                    createdUnfiledFolder: resolution.created
+                )
             ))
-        } catch { return .failure(error) }
+        } catch {
+            context.rollback()
+            return .failure(error)
+        }
     }
 }
 
 private enum ManagedLibraryAdoptionPass {
+    @MainActor
     static func run(container: ModelContainer, libraryURL: URL) async -> Result<Int, Error> {
+        let context = ModelContext(container)
         do {
             let fileManager = FileManager.default
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: libraryURL.path, isDirectory: &isDirectory), isDirectory.boolValue else { return .success(0) }
 
-            let context = ModelContext(container)
             let resolution = try MaintenanceSupport.resolveUnfiledFolder(in: context)
             let books = try context.fetch(FetchDescriptor<Book>())
-            let trackedFileNames = Set(books.compactMap { MaintenanceSupport.trackedFileName(for: $0) })
+            var trackedFileNames = Set(books.compactMap { MaintenanceSupport.trackedFileName(for: $0) })
+            let syncedAudioFileNames = Set(
+                try context.fetch(FetchDescriptor<SyncAsset>()).compactMap { asset -> String? in
+                    guard asset.kindRaw == SyncAssetKind.audio.rawValue,
+                          let relativePath = asset.localRelativePath,
+                          StorageCleanupCoordinator.isSafeRelativePath(relativePath) else {
+                        return nil
+                    }
+                    return relativePath
+                }
+            )
+            let pendingCleanupFileNames = StorageCleanupCoordinator.pendingCleanupFileNames(
+                for: .managedLibrary,
+                in: context
+            )
+            let inboundAudioFileNames = try MaintenanceSupport.pendingInboundAudioFileNames(in: context)
 
-            guard let enumerator = fileManager.enumerator(at: libraryURL, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else { return .success(0) }
+            let fileURLs = try fileManager.contentsOfDirectory(
+                at: libraryURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            )
             var adoptedCount = 0
 
-            while let fileURL = enumerator.nextObject() as? URL {
-                let resourceValues = try fileURL.resourceValues(forKeys: [.isRegularFileKey])
-                guard resourceValues.isRegularFile == true else { continue }
+            for fileURL in fileURLs {
+                let resourceValues = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                guard resourceValues.isRegularFile == true, resourceValues.isSymbolicLink != true else { continue }
                 let fileName = fileURL.lastPathComponent
                 let isSupported = await MainActor.run { SupportedFormats.isSupported(fileURL) }
-                guard !trackedFileNames.contains(fileName), isSupported else { continue }
+                guard !trackedFileNames.contains(fileName),
+                      !syncedAudioFileNames.contains(fileName),
+                      !pendingCleanupFileNames.contains(fileName),
+                      !inboundAudioFileNames.contains(fileName),
+                      isSupported else { continue }
 
-                let asset = AVURLAsset(url: fileURL)
-                let duration = try await asset.load(.duration).seconds
-                guard duration.isFinite, duration > 0 else {
-                    AppLogger.importService.warning("Skipping managed library adoption for \(fileName) because duration could not be determined")
-                    continue
+                do {
+                    let asset = AVURLAsset(url: fileURL)
+                    let duration = try await asset.load(.duration).seconds
+                    guard duration.isFinite, duration > 0 else {
+                        AppLogger.importService.warning("Skipping managed library adoption for \(fileName) because duration could not be determined")
+                        continue
+                    }
+
+                    let metadata = try? await asset.load(.commonMetadata)
+                    let author = await MaintenanceSupport.authorFromMetadata(metadata ?? [])
+                    let book = Book(
+                        title: fileURL.deletingPathExtension().lastPathComponent,
+                        author: author,
+                        localFileName: fileName,
+                        duration: duration,
+                        isImported: true,
+                        folder: resolution.folder
+                    )
+                    context.insert(book)
+                    trackedFileNames.insert(fileName)
+                    adoptedCount += 1
+                } catch {
+                    AppLogger.importService.warning("Skipping managed library adoption for \(fileName): \(error.localizedDescription)")
                 }
-
-                let metadata = try? await asset.load(.commonMetadata)
-                let author = await MaintenanceSupport.authorFromMetadata(metadata ?? [])
-                let book = Book(title: fileURL.deletingPathExtension().lastPathComponent, author: author, localFileName: fileName, duration: duration, isImported: true, folder: resolution.folder)
-                context.insert(book)
-                adoptedCount += 1
             }
 
-            if adoptedCount > 0 { try context.save() }
+            if resolution.created || adoptedCount > 0 { try context.save() }
             return .success(adoptedCount)
-        } catch { return .failure(error) }
+        } catch {
+            context.rollback()
+            return .failure(error)
+        }
     }
 }
 
 private enum DeduplicationPass {
-    struct Payload { let removedCount: Int; let localFileNames: [String]; let coverArtFileNames: [String] }
+    struct Payload { let removedCount: Int }
 
-    nonisolated static func run(container: ModelContainer, libraryURL: URL) -> Result<Payload, Error> {
+    @MainActor
+    static func run(
+        container: ModelContainer,
+        libraryURL: URL,
+        deviceID: String?
+    ) -> Result<Payload, Error> {
+        let context = ModelContext(container)
         do {
-            let context = ModelContext(container)
             let books = try context.fetch(FetchDescriptor<Book>())
-            guard !books.isEmpty else { return .success(Payload(removedCount: 0, localFileNames: [], coverArtFileNames: [])) }
+            let syncedBookIDs = try MaintenanceSupport.syncedBookIDs(in: context)
+            guard !books.isEmpty else { return .success(Payload(removedCount: 0)) }
 
-            var localFileNamesToDelete = Set<String>()
-            var coverArtFileNamesToDelete = Set<String>()
             var booksToDelete: [Book] = []
-            var activeBooks: [Book] = []
-            activeBooks.reserveCapacity(books.count)
 
+            var staleBooks: [Book] = []
             for book in books {
                 guard MaintenanceSupport.shouldValidateLocalLibraryFile(for: book) else { continue }
-                guard let localFileURL = MaintenanceSupport.managedLibraryFileURL(for: book.localFileName, libraryURL: libraryURL),
-                      FileManager.default.fileExists(atPath: localFileURL.path) else {
-                    booksToDelete.append(book)
-                    if let coverArtFileName = book.coverArtFileName { coverArtFileNamesToDelete.insert(coverArtFileName) }
+                guard let localFileURL = MaintenanceSupport.managedLibraryFileURL(for: book.localFileName, libraryURL: libraryURL) else {
+                    staleBooks.append(book)
                     continue
                 }
-                activeBooks.append(book)
+                if MaintenanceSupport.fileStatus(at: localFileURL) == .missingOrInvalid,
+                   !syncedBookIDs.contains(book.id) {
+                    staleBooks.append(book)
+                }
             }
 
-            let groupedBooks = Dictionary(grouping: activeBooks, by: MaintenanceSupport.deduplicationKey)
-            for group in groupedBooks.values where group.count > 1 {
-                processGroup(group, booksToDelete: &booksToDelete, localFileNamesToDelete: &localFileNamesToDelete, coverArtFileNamesToDelete: &coverArtFileNamesToDelete)
+            var groupsByCanonicalPath: [String: [Book]] = [:]
+            for book in books {
+                guard MaintenanceSupport.shouldValidateLocalLibraryFile(for: book) else { continue }
+                guard let canonicalPath = MaintenanceSupport.canonicalManagedPath(for: book.localFileName, libraryURL: libraryURL),
+                      MaintenanceSupport.fileStatus(at: canonicalPath) == .regular else { continue }
+                groupsByCanonicalPath[MaintenanceSupport.canonicalPathKey(for: canonicalPath), default: []].append(book)
             }
 
-            for book in booksToDelete { context.delete(book) }
-            if !booksToDelete.isEmpty { try context.save() }
+            for group in groupsByCanonicalPath.values where group.count > 1 {
+                let keeper = group.max(by: { lhs, rhs in
+                    let lhsDate = lhs.lastPlayedDate ?? .distantPast
+                    let rhsDate = rhs.lastPlayedDate ?? .distantPast
+                    if lhsDate != rhsDate { return lhsDate < rhsDate }
+                    if lhs.lastPlaybackPosition != rhs.lastPlaybackPosition {
+                        return lhs.lastPlaybackPosition < rhs.lastPlaybackPosition
+                    }
+                    return lhs.id.uuidString < rhs.id.uuidString
+                })
+                guard let keeper else { continue }
+                for book in group where book.id != keeper.id {
+                    mergeMetadata(into: keeper, from: book)
+                    booksToDelete.append(book)
+                }
+            }
 
-            return .success(Payload(removedCount: booksToDelete.count, localFileNames: Array(localFileNamesToDelete), coverArtFileNames: Array(coverArtFileNamesToDelete)))
-        } catch { return .failure(error) }
+            for book in staleBooks {
+                booksToDelete.append(book)
+            }
+
+            for book in booksToDelete {
+                try LibraryDeletionTransaction.stageBookDeletion(book, deviceID: deviceID, in: context)
+            }
+            if !booksToDelete.isEmpty {
+                try context.save()
+                StorageCleanupCoordinator.drainPendingCleanup(in: context)
+            }
+
+            return .success(Payload(removedCount: booksToDelete.count))
+        } catch {
+            context.rollback()
+            return .failure(error)
+        }
     }
 
-    private nonisolated static func processGroup(_ group: [Book], booksToDelete: inout [Book], localFileNamesToDelete: inout Set<String>, coverArtFileNamesToDelete: inout Set<String>) {
-        let sortedByDuration = group.sorted { $0.duration < $1.duration }
-        var cluster: [Book] = []
-        var clusterAnchorDuration: Double = 0
-
-        func processCluster(_ booksInCluster: [Book]) {
-            guard booksInCluster.count > 1 else { return }
-            var keeper = booksInCluster[0]
-            for candidate in booksInCluster.dropFirst() where MaintenanceSupport.shouldPrefer(candidate, over: keeper) { keeper = candidate }
-            for book in booksInCluster where book.id != keeper.id {
-                booksToDelete.append(book)
-                if let localFileName = MaintenanceSupport.trackedFileName(for: book) { localFileNamesToDelete.insert(localFileName) }
-                if let coverArtFileName = book.coverArtFileName { coverArtFileNamesToDelete.insert(coverArtFileName) }
-            }
+    private static func mergeMetadata(into keeper: Book, from loser: Book) {
+        if (keeper.author ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let loserAuthor = loser.author,
+           !loserAuthor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            keeper.author = loserAuthor
         }
-
-        for book in sortedByDuration {
-            if cluster.isEmpty { cluster = [book]; clusterAnchorDuration = book.duration; continue }
-            if abs(book.duration - clusterAnchorDuration) <= 1.0 { cluster.append(book) }
-            else { processCluster(cluster); cluster = [book]; clusterAnchorDuration = book.duration }
+        if keeper.duration <= 0, loser.duration > 0 {
+            keeper.duration = loser.duration
         }
-        processCluster(cluster)
+        if !keeper.isImported, loser.isImported {
+            keeper.isImported = true
+        }
+        if keeper.folder == nil {
+            keeper.folder = loser.folder
+        }
+        if keeper.coverArtFileName == nil,
+           let loserCover = loser.coverArtFileName,
+           StorageCleanupCoordinator.isSafeRelativePath(loserCover) {
+            keeper.coverArtFileName = loserCover
+        }
+        var existingChapterKeys = Set(keeper.chapters.map(chapterKey))
+        for chapter in Array(loser.chapters) {
+            guard existingChapterKeys.insert(chapterKey(chapter)).inserted else { continue }
+            chapter.book = keeper
+        }
+        keeper.updateSearchFields()
+    }
+
+    private static func chapterKey(_ chapter: Chapter) -> String {
+        "\(chapter.startTime)|\(chapter.endTime)|\(chapter.source.rawValue)|\(chapter.title)"
     }
 }
 
 private enum MaintenanceSupport {
+    nonisolated enum ManagedFileStatus: Equatable {
+        case regular
+        case missingOrInvalid
+        case unavailable
+    }
+
     @MainActor
     struct UnfiledResolution: Sendable { let folder: Folder; let created: Bool }
-
-    nonisolated static func deduplicationKey(for book: Book) -> String {
-        "\(normalized(book.title))|\(normalized(book.author ?? ""))"
-    }
-    nonisolated static func normalized(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-
-    nonisolated static func shouldPrefer(_ lhs: Book, over rhs: Book) -> Bool {
-        let lhsDate = lhs.lastPlayedDate ?? .distantPast, rhsDate = rhs.lastPlayedDate ?? .distantPast
-        if lhsDate != rhsDate { return lhsDate > rhsDate }
-        if lhs.lastPlaybackPosition != rhs.lastPlaybackPosition { return lhs.lastPlaybackPosition > rhs.lastPlaybackPosition }
-        return lhs.id.uuidString > rhs.id.uuidString
-    }
 
     nonisolated static func shouldValidateLocalLibraryFile(for book: Book) -> Bool { !book.isRemote }
     nonisolated static func trackedFileName(for book: Book) -> String? { shouldValidateLocalLibraryFile(for: book) ? validatedManagedFileName(book.localFileName) : nil }
 
     nonisolated static func validatedManagedFileName(_ fileName: String) -> String? {
-        let trimmed = fileName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed == (trimmed as NSString).lastPathComponent, trimmed != ".", trimmed != ".." else { return nil }
-        return trimmed
+        StorageCleanupCoordinator.isSafeRelativePath(fileName) ? fileName : nil
     }
 
     nonisolated static func managedLibraryFileURL(for fileName: String, libraryURL: URL) -> URL? {
@@ -251,15 +356,81 @@ private enum MaintenanceSupport {
         return fileURL
     }
 
-    nonisolated static func removeManagedLibraryFile(named fileName: String, libraryURL: URL) {
-        guard let fileURL = managedLibraryFileURL(for: fileName, libraryURL: libraryURL) else {
-            AppLogger.storage.warning("Skipped unsafe library file deletion for \(fileName)")
-            return
+    nonisolated static func canonicalManagedPath(for fileName: String, libraryURL: URL) -> URL? {
+        managedLibraryFileURL(for: fileName, libraryURL: libraryURL)
+    }
+
+    nonisolated static func canonicalPathKey(for fileURL: URL) -> String {
+        if let resourceValues = try? fileURL.resourceValues(forKeys: [.fileResourceIdentifierKey]),
+           let identifier = resourceValues.fileResourceIdentifier {
+            return "resource:\(String(describing: identifier))"
         }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDirectory), !isDirectory.boolValue else { return }
-        do { try FileManager.default.removeItem(at: fileURL) }
-        catch { AppLogger.storage.error("Failed to delete library file: \(error.localizedDescription)") }
+        return "path:\(fileURL.standardizedFileURL.path)"
+    }
+
+    nonisolated static func fileStatus(at fileURL: URL) -> ManagedFileStatus {
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+            return attributes[.type] as? FileAttributeType == .typeRegular
+                ? .regular
+                : .missingOrInvalid
+        } catch let error as CocoaError where error.code == .fileNoSuchFile {
+            return .missingOrInvalid
+        } catch {
+            return .unavailable
+        }
+    }
+
+    static func syncedBookIDs(in context: ModelContext) throws -> Set<UUID> {
+        let assets = try context.fetch(FetchDescriptor<SyncAsset>())
+        let states = try context.fetch(FetchDescriptor<SyncEntityState>())
+        var bookIDs = Set(assets.map(\.bookID))
+        for state in states where state.entityKindRaw == SyncEntityKind.book.rawValue {
+            if let bookID = UUID(uuidString: state.localEntityID) {
+                bookIDs.insert(bookID)
+            }
+        }
+        return bookIDs
+    }
+
+    static func pendingInboundAudioFileNames(in context: ModelContext) throws -> Set<String> {
+        let inboxes = try context.fetch(FetchDescriptor<SyncInboxRecord>())
+        let retries = try context.fetch(FetchDescriptor<SyncInboxRetryState>())
+        let retriesByRecordName = Dictionary(uniqueKeysWithValues: retries.map { ($0.recordName, $0) })
+        var names: Set<String> = []
+        for inbox in inboxes {
+            guard inbox.recordType == CloudSyncRecordType.asset.rawValue,
+                  inbox.stateRaw != "applied",
+                  let payload = try? CloudSyncRecordCodec.decodePayload(
+                      CloudSyncAssetPayload.self,
+                      from: inbox.payloadData
+                  ),
+                  payload.kind == .audio else {
+                continue
+            }
+            let extensionValue = payload.pathExtension.lowercased()
+            guard extensionValue.unicodeScalars.allSatisfy({
+                CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "+-")).contains($0)
+            }) else {
+                continue
+            }
+            let suffix = extensionValue.isEmpty ? "" : ".\(extensionValue)"
+            let defaultName = "icloud-\(payload.assetID.uuidString.lowercased())\(suffix)"
+            if StorageCleanupCoordinator.isSafeRelativePath(defaultName) {
+                names.insert(defaultName)
+            }
+            let fallbackName = "icloud-sync-\(payload.assetID.uuidString.lowercased())\(suffix)"
+            if StorageCleanupCoordinator.isSafeRelativePath(fallbackName) {
+                names.insert(fallbackName)
+            }
+            if let claimID = retriesByRecordName[inbox.id]?.claimID {
+                let claimedName = "icloud-sync-\(payload.assetID.uuidString.lowercased())-\(claimID.uuidString.prefix(8).lowercased())\(suffix)"
+                if StorageCleanupCoordinator.isSafeRelativePath(claimedName) {
+                    names.insert(claimedName)
+                }
+            }
+        }
+        return names
     }
 
     static func resolveUnfiledFolder(in context: ModelContext) throws -> UnfiledResolution {
@@ -268,7 +439,6 @@ private enum MaintenanceSupport {
         if let existing = try context.fetch(unfiledFetch).first { return UnfiledResolution(folder: existing, created: false) }
         let folder = Folder(name: "Unfiled", isSystem: true, sortOrder: 0)
         context.insert(folder)
-        try context.save()
         return UnfiledResolution(folder: folder, created: true)
     }
 

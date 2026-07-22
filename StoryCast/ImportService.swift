@@ -4,6 +4,14 @@ import Foundation
 import Combine
 import os
 
+struct ImportBatchResult: Sendable {
+    let importedCount: Int
+    let duplicateCount: Int
+    let failedCount: Int
+    let errors: [ImportError]
+    let skippedDuplicateFileNames: [String]
+}
+
 @MainActor
 final class ImportService: ObservableObject {
     static let shared = ImportService()
@@ -18,7 +26,8 @@ final class ImportService: ObservableObject {
     @Published var downloadProgress: Double = 0.0
     @Published var failedImports: [FailedImport] = []
 
-    private var currentImportTask: Task<Void, Error>?
+    private let operationGate = ImportOperationGate()
+    private var activeImportTask: Task<Void, Never>?
     private var importWasCancelled = false
     private(set) var retryManager: ImportRetryManager!
 
@@ -31,6 +40,13 @@ final class ImportService: ObservableObject {
         self.retryManager = ImportRetryManager(
             performImport: { [weak self] url, folderId, container, retryCount in
                 guard let self else { return false }
+                let requestID = UUID()
+                do {
+                    try await self.operationGate.acquire(requestID: requestID)
+                } catch {
+                    return false
+                }
+                defer { Task { await self.operationGate.release() } }
                 return try await self.performImport(url: url, folderId: folderId, container: container, retryCountOnFailure: retryCount, shouldScheduleAutoRetry: true)
             },
             getFailedImports: { [weak self] in self?.failedImports ?? [] },
@@ -43,65 +59,72 @@ final class ImportService: ObservableObject {
     }
 
     func importFilesToFolder(urls: [URL], folderId: UUID?, container: ModelContainer) async {
-        importWasCancelled = false
-        currentImportTask?.cancel()
+        let requestID = UUID()
 
-        let task = Task<Void, Error> { @MainActor [weak self] in
+        do {
+            try await operationGate.acquire(requestID: requestID)
+        } catch {
+            return
+        }
+
+        let task = Task<Void, Never> { @MainActor [weak self] in
             guard let self else { return }
 
-            isImporting = true
-            totalFiles = urls.count
-            completedFiles = 0
-            currentFileName = ""
-            importErrors = []
-            skippedDuplicateFileNames = []
+            self.importWasCancelled = false
+            self.isImporting = true
+            self.totalFiles = urls.count
+            self.completedFiles = 0
+            self.currentFileName = ""
+            self.importErrors = []
+            self.skippedDuplicateFileNames = []
 
             defer {
-                isImporting = false
+                self.isImporting = false
                 if Task.isCancelled {
-                    currentPhase = .idle
-                    downloadProgress = 0.0
+                    self.currentPhase = .idle
+                    self.downloadProgress = 0.0
                 }
+                Task { await self.operationGate.release() }
             }
 
             for url in urls {
                 guard !Task.isCancelled else { break }
-                currentFileName = url.lastPathComponent
+                self.currentFileName = url.lastPathComponent
 
                 do {
-                    let didImport = try await performImport(url: url, folderId: folderId, container: container)
+                    let didImport = try await self.performImport(url: url, folderId: folderId, container: container)
                     guard !Task.isCancelled else { break }
 
                     if didImport {
-                        completedFiles += 1
+                        self.completedFiles += 1
                     } else {
-                        skippedDuplicateFileNames.append(url.lastPathComponent)
+                        self.skippedDuplicateFileNames.append(url.lastPathComponent)
                     }
                 } catch is CancellationError {
                     break
                 } catch {
-                    importErrors.append(ImportError(fileName: url.lastPathComponent, error: error))
+                    self.importErrors.append(ImportError(fileName: url.lastPathComponent, error: error))
                     AppLogger.importService.error("Import failed for \(url.lastPathComponent, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private)")
                 }
             }
+
+            if !self.importWasCancelled, !Task.isCancelled {
+                self.announceImportSummary()
+            }
         }
 
-        currentImportTask = task
-        _ = try? await task.value
-
-        if currentImportTask == task {
-            currentImportTask = nil
-        }
-
-        if !importWasCancelled {
-            announceImportSummary()
+        activeImportTask = task
+        await task.value
+        if activeImportTask == task {
+            activeImportTask = nil
         }
     }
 
     func cancelImport() {
         importWasCancelled = true
-        currentImportTask?.cancel()
-        currentImportTask = nil
+        activeImportTask?.cancel()
+        activeImportTask = nil
+        Task { await operationGate.cancelAll() }
         retryManager.cancelAllRetryTasks()
         isImporting = false
         currentPhase = .idle
@@ -239,17 +262,24 @@ final class ImportService: ObservableObject {
             try Task.checkCancellation()
             try await StorageManager.shared.setupStoryCastLibraryDirectory()
 
-            if let coverArtData = metadata.coverArtData {
-                stagedCoverArtFileName = try await saveCoverArtIfPossible(coverArtData, for: metadata.bookId, storageManager: StorageManager.shared)
+            let context = ModelContext(container)
+            if try await checkForDuplicate(
+                title: metadata.title,
+                duration: metadata.duration,
+                author: metadata.author,
+                fileSize: metadata.fileSize,
+                stagedFileURL: stagedAudioURL,
+                in: context
+            ) {
+                AppLogger.importService.info("Skipped duplicate import for \"\(metadata.title)\" (duration: \(String(format: "%.1f", metadata.duration))s)")
+                currentPhase = .idle
+                return false
             }
 
             try Task.checkCancellation()
 
-            let context = ModelContext(container)
-            if try checkForDuplicate(title: metadata.title, duration: metadata.duration, author: metadata.author, fileSize: metadata.fileSize, in: context) {
-                AppLogger.importService.info("Skipped duplicate import for \"\(metadata.title)\" (duration: \(String(format: "%.1f", metadata.duration))s)")
-                currentPhase = .idle
-                return false
+            if let coverArtData = metadata.coverArtData {
+                stagedCoverArtFileName = try await saveCoverArtIfPossible(coverArtData, for: metadata.bookId, storageManager: StorageManager.shared)
             }
 
             try Task.checkCancellation()
@@ -322,8 +352,22 @@ final class ImportService: ObservableObject {
         return ExtractedMetadata(bookId: UUID(), title: title, author: author, duration: duration, coverArtData: coverArtData, fileSize: fileSize)
     }
 
-    private func checkForDuplicate(title: String, duration: Double, author: String?, fileSize: Int64?, in context: ModelContext) throws -> Bool {
-        ImportDuplicateDetector.shared.isDuplicate(title: title, duration: duration, author: author, fileSize: fileSize, in: context)
+    private func checkForDuplicate(
+        title: String,
+        duration: Double,
+        author: String?,
+        fileSize: Int64?,
+        stagedFileURL: URL,
+        in context: ModelContext
+    ) async throws -> Bool {
+        try await ImportDuplicateDetector.shared.isDuplicate(
+            title: title,
+            duration: duration,
+            author: author,
+            fileSize: fileSize,
+            stagedFileURL: stagedFileURL,
+            in: context
+        )
     }
 
     private func persistBook(
@@ -473,8 +517,9 @@ extension ImportService {
     }
 
     func debugResetState() {
-        currentImportTask?.cancel()
-        currentImportTask = nil
+        activeImportTask?.cancel()
+        activeImportTask = nil
+        Task { await operationGate.cancelAll() }
         retryManager.debugResetState()
         importWasCancelled = false
         isImporting = false

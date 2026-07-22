@@ -1,61 +1,24 @@
 import Foundation
-import AVFoundation
+import CryptoKit
 import SwiftData
 import os
 
-/// Detects duplicate audiobooks during import to prevent library clutter.
-///
-/// `ImportDuplicateDetector` uses a multi-factor approach:
-/// 1. Normalized title match (case-insensitive, trimmed)
-/// 2. Duration match (within 1 second tolerance)
-/// 3. Author match (when both have metadata)
-/// 4. File size match (fallback when author unavailable)
-///
-/// ## Duplicate Detection Criteria
-///
-/// A book is considered duplicate if:
-/// - Normalized titles match exactly
-/// - Durations match within 1 second
-/// - AND either:
-///   - Authors match (when both available)
-///   - File sizes match (when author unavailable)
-///
-/// ## Usage
-///
-/// ```swift
-/// let detector = ImportDuplicateDetector.shared
-/// let isDuplicate = detector.isDuplicate(
-///     title: "Book Title",
-///     duration: 3600,
-///     author: "Author Name",
-///     fileSize: 12345678,
-///     in: context
-/// )
-/// ```
 @MainActor
 final class ImportDuplicateDetector {
     static let shared = ImportDuplicateDetector()
-    
+
     private let libraryURL = StorageManager.shared.storyCastLibraryURL
-    
+
     private init() {}
-    
-    /// Checks if a book with the given attributes already exists in the library.
-    ///
-    /// - Parameters:
-    ///   - title: The book title
-    ///   - duration: Audio duration in seconds
-    ///   - author: Optional author from metadata
-    ///   - fileSize: File size in bytes
-    ///   - context: SwiftData context for fetching existing books
-    /// - Returns: `true` if a duplicate exists
+
     func isDuplicate(
         title: String,
         duration: Double,
         author: String?,
         fileSize: Int64?,
+        stagedFileURL: URL,
         in context: ModelContext
-    ) -> Bool {
+    ) async throws -> Bool {
         let existingBooks: [Book]
         do {
             existingBooks = try context.fetch(FetchDescriptor<Book>())
@@ -63,62 +26,116 @@ final class ImportDuplicateDetector {
             AppLogger.importService.error("Failed to fetch books for duplicate detection: \(error.localizedDescription, privacy: .private)")
             return false
         }
-        
-        let normalizedTitle = Self.normalizedToken(title)
-        let normalizedAuthor = Self.normalizedToken(author)
-        
-        return existingBooks.contains { existingBook in
-            guard Self.normalizedToken(existingBook.title) == normalizedTitle else {
-                return false
-            }
-            
-            guard abs(existingBook.duration - duration) < 1.0 else {
-                return false
-            }
-            
-            let existingFileURL = libraryURL.appendingPathComponent(existingBook.localFileName)
-            guard FileManager.default.fileExists(atPath: existingFileURL.path) else {
-                return false
-            }
-            
-            let existingFileSize = Self.fileSizeInBytes(at: existingFileURL)
-            let existingAuthor = Self.normalizedToken(existingBook.author)
-            
-            if let fileSize,
-               let existingFileSize,
-               fileSize != existingFileSize {
-                return false
-            }
-            
-            if !normalizedAuthor.isEmpty && !existingAuthor.isEmpty {
-                return existingAuthor == normalizedAuthor
-            }
-            
-            return true
+
+        let importHashTask = Task.detached(priority: .utility) {
+            try Self.sha256Hex(of: stagedFileURL)
         }
+        guard let importHash = try await awaitHashTask(importHashTask) else {
+            AppLogger.importService.warning("Skipped hash-based duplicate detection because the staged file could not be read")
+            return false
+        }
+
+        let candidateURLs = existingBooks.compactMap { existingBook -> URL? in
+            guard !existingBook.isRemote else { return nil }
+
+            guard let existingFileURL = Self.managedLibraryFileURL(
+                for: existingBook.localFileName,
+                libraryURL: libraryURL
+            ) else {
+                return nil
+            }
+            guard Self.isRegularFile(at: existingFileURL) else {
+                return nil
+            }
+
+            if let fileSize {
+                let existingFileSize = Self.fileSizeInBytes(at: existingFileURL)
+                if let existingFileSize, fileSize != existingFileSize {
+                    return nil
+                }
+            }
+            return existingFileURL
+        }
+
+        guard !candidateURLs.isEmpty else { return false }
+
+        let comparisonTask = Task.detached(priority: .utility) {
+            for candidateURL in candidateURLs {
+                try Task.checkCancellation()
+                if try Self.sha256Hex(of: candidateURL) == importHash {
+                    return true
+                }
+            }
+            return false
+        }
+        return try await awaitComparisonTask(comparisonTask)
     }
-    
-    // MARK: - Private Helpers
-    
-    /// Normalizes a string for duplicate comparison.
-    private nonisolated static func normalizedToken(_ value: String?) -> String {
-        (value ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-    }
-    
-    /// Gets file size in bytes for a file at the given URL.
+
     private nonisolated static func fileSizeInBytes(at url: URL) -> Int64? {
         if let resourceValues = try? url.resourceValues(forKeys: [.fileSizeKey]),
            let fileSize = resourceValues.fileSize {
             return Int64(fileSize)
         }
-        
+
         if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
            let sizeNumber = attributes[.size] as? NSNumber {
             return sizeNumber.int64Value
         }
-        
+
         return nil
+    }
+
+    private nonisolated static func sha256Hex(of url: URL) throws -> String? {
+        do {
+            guard isRegularFile(at: url) else { return nil }
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+
+            var hasher = SHA256()
+            while true {
+                try Task.checkCancellation()
+                let data = try handle.read(upToCount: 1_048_576)
+                guard let data, !data.isEmpty else { break }
+                hasher.update(data: data)
+            }
+
+            let digest = hasher.finalize()
+            return digest.map { String(format: "%02x", $0) }.joined()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
+    }
+
+    private nonisolated static func isRegularFile(at url: URL) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
+            return false
+        }
+        return attributes[.type] as? FileAttributeType == .typeRegular
+    }
+
+    private func awaitHashTask(_ task: Task<String?, Error>) async throws -> String? {
+        try await withTaskCancellationHandler(operation: {
+            try await task.value
+        }, onCancel: {
+            task.cancel()
+        })
+    }
+
+    private func awaitComparisonTask(_ task: Task<Bool, Error>) async throws -> Bool {
+        try await withTaskCancellationHandler(operation: {
+            try await task.value
+        }, onCancel: {
+            task.cancel()
+        })
+    }
+
+    private nonisolated static func managedLibraryFileURL(for fileName: String, libraryURL: URL) -> URL? {
+        guard StorageCleanupCoordinator.isSafeRelativePath(fileName) else { return nil }
+        let root = libraryURL.standardizedFileURL
+        let fileURL = root.appendingPathComponent(fileName).standardizedFileURL
+        guard fileURL.deletingLastPathComponent() == root else { return nil }
+        return fileURL
     }
 }

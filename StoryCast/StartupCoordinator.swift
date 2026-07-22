@@ -6,10 +6,12 @@ import SwiftUI
 
 @MainActor
 final class StartupCoordinator: ObservableObject {
-    @Published private(set) var isLoading = false
+    static let shared = StartupCoordinator()
+
+    @Published private(set) var isLoading = true
     @Published private(set) var loadError: String?
 
-    private let legacyDeduplicationKey = "hasCompletedLegacyLibraryDeduplication"
+    private let pathBasedDeduplicationKey = "hasCompletedPathBasedLibraryDeduplicationV2"
     private let normalizedURLMigrationKey = "hasCompletedNormalizedURLMigration"
     private var hasRequestedStartup = false
     private var hasScheduledMaintenance = false
@@ -17,7 +19,10 @@ final class StartupCoordinator: ObservableObject {
     private var maintenanceTask: Task<Void, Never>?
 
     func startIfNeeded(container: ModelContainer) async {
-        guard !hasRequestedStartup else { return }
+        if hasRequestedStartup {
+            await startupTask?.value
+            return
+        }
         hasRequestedStartup = true
         await runStartup(container: container)
     }
@@ -42,7 +47,12 @@ final class StartupCoordinator: ObservableObject {
                 prewarmCoreServices()
                 try LibraryMaintenanceService.ensureUnfiledFolderExists(container: container)
                 try await prewarmAppResources(container: container)
+                await ServerRemovalService.resumePendingRemovals(container: container)
                 scheduleMaintenanceIfNeeded(container: container)
+                await maintenanceTask?.value
+                Task(priority: .utility) {
+                    await LibraryMaintenanceService.syncRemoteLibraries(container: container)
+                }
             } catch {
                 loadError = error.localizedDescription
                 hasRequestedStartup = false
@@ -56,17 +66,23 @@ final class StartupCoordinator: ObservableObject {
         guard !hasScheduledMaintenance else { return }
         hasScheduledMaintenance = true
 
-        let legacyDeduplicationKey = legacyDeduplicationKey
+        let pathBasedDeduplicationKey = pathBasedDeduplicationKey
         let normalizedURLMigrationKey = normalizedURLMigrationKey
         maintenanceTask = Task(priority: .utility) { [weak self] in
             await PlaybackSessionManager.shared.recoverPendingProgressIfNeeded(container: container)
+
+            let cleanupContext = ModelContext(container)
+            _ = await MainActor.run {
+                StorageCleanupCoordinator.drainPendingCleanup(in: cleanupContext)
+            }
+
             await LibraryMaintenanceService.repairLibraryIntegrity(container: container)
             await LibraryMaintenanceService.adoptManagedLibraryFiles(container: container)
 
-            if !UserDefaults.standard.bool(forKey: legacyDeduplicationKey) {
+            if !UserDefaults.standard.bool(forKey: pathBasedDeduplicationKey) {
                 let result = await LibraryMaintenanceService.deduplicateExistingBooks(container: container)
                 if result.completed {
-                    UserDefaults.standard.set(true, forKey: legacyDeduplicationKey)
+                    UserDefaults.standard.set(true, forKey: pathBasedDeduplicationKey)
                 }
             }
 
@@ -75,10 +91,13 @@ final class StartupCoordinator: ObservableObject {
                 UserDefaults.standard.set(true, forKey: normalizedURLMigrationKey)
             }
 
-            await LibraryMaintenanceService.syncRemoteLibraries(container: container)
+            await MainActor.run {
+                SyncController.shared.bootstrapIfNeeded(container: container)
+            }
 
             await MainActor.run {
                 self?.maintenanceTask = nil
+                self?.hasScheduledMaintenance = false
             }
         }
     }
@@ -120,7 +139,6 @@ final class StartupCoordinator: ObservableObject {
         }.value
 
         _ = try await (swiftDataTask, storageTask)
-        SyncController.shared.bootstrapIfNeeded(container: container)
     }
 
     private static func migrateNormalizedURL(container: ModelContainer) async {

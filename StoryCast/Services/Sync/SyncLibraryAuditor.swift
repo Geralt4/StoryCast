@@ -165,7 +165,8 @@ enum SyncLibraryAuditor {
                 fileName: book.localFileName,
                 url: libraryURL.appendingPathComponent(book.localFileName)
             ))
-            if let coverArtFileName = book.coverArtFileName, !coverArtFileName.isEmpty {
+            if let coverArtFileName = book.coverArtFileName,
+               StorageCleanupCoordinator.isSafeRelativePath(coverArtFileName) {
                 candidates.append(AssetCandidate(
                     bookID: bookID,
                     kind: .coverArt,

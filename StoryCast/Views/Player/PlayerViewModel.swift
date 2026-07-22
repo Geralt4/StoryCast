@@ -96,7 +96,9 @@ final class PlayerViewModel {
 
     var bookAudioURL: URL? {
         if book.isRemote {
-            if book.isDownloaded, let cachePath = book.localCachePath {
+            if book.isDownloaded,
+               let cachePath = book.localCachePath,
+               StorageCleanupCoordinator.isSafeRelativePath(cachePath) {
                 let url = StorageManager.shared.remoteAudioCacheURL(for: cachePath)
                 // Cross-device guard: `isDownloaded` is synced via CloudKit, but
                 // the actual cached file is per-device. If the file isn't
@@ -107,8 +109,11 @@ final class PlayerViewModel {
             }
             return nil
         }
-        guard !book.localFileName.isEmpty else { return nil }
-        return StorageManager.shared.storyCastLibraryURL.appendingPathComponent(book.localFileName)
+        guard StorageCleanupCoordinator.isSafeRelativePath(book.localFileName) else { return nil }
+        let root = StorageManager.shared.storyCastLibraryURL.standardizedFileURL
+        let fileURL = root.appendingPathComponent(book.localFileName).standardizedFileURL
+        guard fileURL.deletingLastPathComponent() == root else { return nil }
+        return fileURL
     }
 
     var usesRemoteStreaming: Bool {

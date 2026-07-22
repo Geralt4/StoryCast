@@ -102,11 +102,11 @@ nonisolated enum StorageVersionValidator {
     nonisolated static func userMessage(for error: StorageVersionError) -> String {
         switch error {
         case .versionMismatchDetected:
-            return "Your library was created with a newer version of StoryCast. You can try to recover your data or start fresh."
+            return "Your library was created with a newer version of StoryCast. You can preserve a backup and create a new empty library."
         case .migrationFailed:
-            return "There was a problem updating your library. You can try to recover your data or start fresh."
+            return "There was a problem updating your library. You can preserve a backup and create a new empty library."
         case .unknownError:
-            return "There was a problem opening your library. You can try to recover your data or start fresh."
+            return "There was a problem opening your library. You can preserve a backup and create a new empty library."
         }
     }
     

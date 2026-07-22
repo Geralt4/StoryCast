@@ -78,7 +78,7 @@ struct LibraryView: View {
                 Button("Delete", role: .destructive) {
                     HapticManager.impact(.heavy); HapticManager.notification(.success)
                     if let folder = coordinator.folderToDelete, let unfiled = unfiledFolder {
-                        folderOperations.deleteFolderWithDestination(folder, destination: unfiled)
+                        deleteFolder(folder, into: unfiled)
                     } else {
                         AppLogger.app.error("LibraryView: cannot delete folder — unfiledFolder is nil")
                     }
@@ -88,19 +88,19 @@ struct LibraryView: View {
             .overlay { if importService.isImporting { ImportProgressOverlay(importService: importService) { importHandler.cancelImport(importService: importService) } } }
             .sheet(isPresented: $coordinator.showBulkMoveSheet) {
                 BulkMoveFoldersSheet(folderIds: coordinator.selectedFolderIds, folders: folders, onSave: { targetFolder in
-                    folderOperations.moveFolders(coordinator.selectedFolderIds, into: targetFolder)
+                    moveFolders(coordinator.selectedFolderIds, into: targetFolder)
                     coordinator.selectedFolderIds.removeAll(); coordinator.showBulkMoveSheet = false
                 }, onCancel: { coordinator.showBulkMoveSheet = false })
             }
             .sheet(isPresented: $coordinator.showBulkDeleteSheet) {
                 BulkDeleteFoldersConfirmationSheet(count: coordinator.selectedFolderIds.count, onConfirm: {
-                    folderOperations.deleteFolders(coordinator.selectedFolderIds)
+                    deleteFolders(coordinator.selectedFolderIds)
                     coordinator.selectedFolderIds.removeAll(); coordinator.showBulkDeleteSheet = false
                 }, onCancel: { coordinator.showBulkDeleteSheet = false })
             }
             .sheet(item: $coordinator.folderToMerge) { folder in
                 MergeFolderSheet(sourceFolder: folder, folders: folders, onSave: { targetFolder in
-                    folderOperations.mergeFolder(folder, into: targetFolder); coordinator.folderToMerge = nil
+                    mergeFolder(folder, into: targetFolder); coordinator.folderToMerge = nil
                 }, onCancel: { coordinator.folderToMerge = nil })
             }
             .sheet(item: $coordinator.searchBookToMove) { book in
@@ -243,10 +243,63 @@ struct LibraryView: View {
         actionTask = Task { do { try await bookActions.deleteBook(book) } catch { presentLibraryError("Failed to delete book", error: error) } }
     }
 
+    private func deleteFolder(_ folder: Folder, into destination: Folder) {
+        actionTask?.cancel()
+        actionTask = Task {
+            do {
+                try await folderOperations.deleteFolderWithDestination(folder, destination: destination)
+            } catch {
+                presentLibraryError("Failed to delete folder", error: error)
+            }
+        }
+    }
+
+    private func moveFolders(_ folderIDs: Set<UUID>, into destination: Folder) {
+        actionTask?.cancel()
+        actionTask = Task {
+            do {
+                try await folderOperations.moveFolders(folderIDs, into: destination)
+            } catch {
+                presentLibraryError("Failed to move folders", error: error)
+            }
+        }
+    }
+
+    private func deleteFolders(_ folderIDs: Set<UUID>) {
+        actionTask?.cancel()
+        actionTask = Task {
+            do {
+                try await folderOperations.deleteFolders(folderIDs)
+            } catch {
+                presentLibraryError("Failed to delete folders", error: error)
+            }
+        }
+    }
+
+    private func mergeFolder(_ source: Folder, into destination: Folder) {
+        actionTask?.cancel()
+        actionTask = Task {
+            do {
+                try await folderOperations.mergeFolder(source, into: destination)
+            } catch {
+                presentLibraryError("Failed to merge folder", error: error)
+            }
+        }
+    }
+
     private func deleteUserFolders(offsets: IndexSet) {
         guard let destinationFolder = unfiledFolder else { return }
         let foldersToDelete = offsets.compactMap { userFolders.indices.contains($0) ? userFolders[$0] : nil }
-        withAnimation { for folder in foldersToDelete { folderOperations.deleteFolderWithDestination(folder, destination: destinationFolder) } }
+        let folderIDs = Set(foldersToDelete.map(\.id))
+        guard !folderIDs.isEmpty else { return }
+        actionTask?.cancel()
+        actionTask = Task {
+            do {
+                try await folderOperations.moveFolders(folderIDs, into: destinationFolder)
+            } catch {
+                presentLibraryError("Failed to delete folders", error: error)
+            }
+        }
     }
 
     private func presentLibraryError(_ message: String, error: Error) {

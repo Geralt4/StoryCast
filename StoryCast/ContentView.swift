@@ -3,10 +3,11 @@ import SwiftData
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
 
-    @State var storageBootstrapState: StorageBootstrapState
+    let storageBootstrapState: StorageBootstrapState
 
-    @StateObject private var startupCoordinator = StartupCoordinator()
+    @ObservedObject private var startupCoordinator = StartupCoordinator.shared
 
     var body: some View {
         Group {
@@ -16,12 +17,7 @@ struct ContentView: View {
             case .failed(let failure):
                 StorageRecoveryView(failure: failure)
             case .versionMismatch(let error):
-                StorageVersionMismatchView(
-                    error: error,
-                    onRecoveryComplete: { newState in
-                        storageBootstrapState = newState
-                    }
-                )
+                StorageVersionMismatchView(error: error)
             case .unrecoverable(let error):
                 FatalErrorView(error: error, onReset: {
                     Task {
@@ -31,8 +27,40 @@ struct ContentView: View {
             }
         }
         .task {
-            guard case .ready = storageBootstrapState else { return }
+            guard storageBootstrapState.allowsLibraryAccess else { return }
             await startupCoordinator.startIfNeeded(container: modelContext.container)
+        }
+        .onOpenURL { url in
+            guard storageBootstrapState.allowsLibraryAccess else {
+                AppLogger.app.error("Blocked file import while storage recovery mode is active")
+                return
+            }
+
+            Task {
+                await startupCoordinator.startIfNeeded(container: modelContext.container)
+                guard startupCoordinator.loadError == nil else {
+                    AppLogger.app.error("Blocked file import because startup did not complete")
+                    return
+                }
+
+                do {
+                    try await ImportService.shared.importFile(url: url, container: modelContext.container)
+                    await SyncController.shared.synchronizeIfEnabled(
+                        container: modelContext.container,
+                        auditLibrary: true
+                    )
+                } catch {
+                    AppLogger.app.error("Failed to import file from URL: \(error.localizedDescription, privacy: .private)")
+                }
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active, storageBootstrapState.allowsLibraryAccess else { return }
+            Task {
+                await startupCoordinator.startIfNeeded(container: modelContext.container)
+                guard startupCoordinator.loadError == nil else { return }
+                await SyncController.shared.synchronizeIfEnabled(container: modelContext.container)
+            }
         }
     }
 
@@ -51,6 +79,8 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
             }
+        } else if startupCoordinator.isLoading {
+            ProgressView("Preparing your library...")
         } else {
             LibraryView()
         }

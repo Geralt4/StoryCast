@@ -4,26 +4,27 @@ import SwiftData
 
 nonisolated final class ServerRemovalServiceTests: XCTestCase {
     @MainActor
-    func testRemoveServerKeepsServerAndTokenWhenRemoteCleanupFails() async throws {
+    func testTokenDeletionFailurePreservesServerAndBooks() async throws {
         let container = try makeInMemoryContainer()
         let context = ModelContext(container)
         let server = ABSServer(name: "Test Server", url: "https://example.com", username: "tester")
         context.insert(server)
+        context.insert(Book(
+            title: "Remote Book", duration: 100,
+            isRemote: true, serverId: server.id
+        ))
         try context.save()
 
         let service = ServerRemovalService(
-            remoteBookRemoval: { _, _ in throw TestError.remoteCleanupFailed },
-            loadToken: { _ in "token-123" },
-            deleteToken: { _ in XCTFail("Token should not be deleted when cleanup fails") },
-            saveToken: { _, _ in XCTFail("Token should not need restoration when cleanup fails") },
-            persistServerDeletion: { _, _ in XCTFail("Server should not be deleted when cleanup fails") }
+            deleteToken: { _ in throw TestError.tokenDeletionFailed },
+            persistFinalDeletion: { _, _ in XCTFail("Final deletion should not run when token fails") }
         )
 
         do {
             try await service.removeServer(server, modelContext: context)
-            XCTFail("Expected remote cleanup failure")
+            XCTFail("Expected token deletion failure")
         } catch let error as ServerRemovalService.RemovalError {
-            guard case .remoteCleanupFailed = error else {
+            guard case .tokenDeletionFailed = error else {
                 return XCTFail("Unexpected removal error: \(error)")
             }
         }
@@ -31,27 +32,27 @@ nonisolated final class ServerRemovalServiceTests: XCTestCase {
         let remainingServers = try context.fetch(FetchDescriptor<ABSServer>())
         XCTAssertEqual(remainingServers.count, 1)
         XCTAssertEqual(remainingServers.first?.id, server.id)
+        XCTAssertFalse(remainingServers.first?.isActive ?? true)
+
+        let journals = try context.fetch(FetchDescriptor<ServerRemovalJournalEntry>())
+        XCTAssertEqual(journals.count, 1)
+        XCTAssertEqual(journals.first?.phaseRaw, "prepared")
+
+        let books = try context.fetch(FetchDescriptor<Book>())
+        XCTAssertEqual(books.count, 1)
     }
 
     @MainActor
-    func testRemoveServerRestoresTokenWhenPersistenceFails() async throws {
+    func testFinalDeletionFailurePreservesServerAndBooks() async throws {
         let container = try makeInMemoryContainer()
         let context = ModelContext(container)
         let server = ABSServer(name: "Test Server", url: "https://example.com", username: "tester")
         context.insert(server)
         try context.save()
 
-        let recorder = TokenRecorder()
         let service = ServerRemovalService(
-            remoteBookRemoval: { _, _ in },
-            loadToken: { _ in "token-456" },
-            deleteToken: { serverURL in
-                await recorder.recordDeletion(url: serverURL)
-            },
-            saveToken: { token, serverURL in
-                await recorder.recordRestore(token: token, url: serverURL)
-            },
-            persistServerDeletion: { _, _ in throw TestError.persistenceFailed }
+            deleteToken: { _ in },
+            persistFinalDeletion: { _, _ in throw TestError.persistenceFailed }
         )
 
         do {
@@ -63,37 +64,130 @@ nonisolated final class ServerRemovalServiceTests: XCTestCase {
             }
         }
 
-        let deletedTokenURL = await recorder.deletedTokenURL
-        let restoredToken = await recorder.restoredToken
-        XCTAssertEqual(deletedTokenURL, server.normalizedURL)
-        XCTAssertEqual(restoredToken?.token, "token-456")
-        XCTAssertEqual(restoredToken?.url, server.normalizedURL)
-
         let remainingServers = try context.fetch(FetchDescriptor<ABSServer>())
         XCTAssertEqual(remainingServers.count, 1)
-        XCTAssertEqual(remainingServers.first?.id, server.id)
+
+        let journals = try context.fetch(FetchDescriptor<ServerRemovalJournalEntry>())
+        XCTAssertEqual(journals.count, 1)
+        XCTAssertEqual(journals.first?.phaseRaw, "credentialRemoved")
+    }
+
+    @MainActor
+    func testSuccessfulRemovalDeletesServerBooksAndJournal() async throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let server = ABSServer(name: "Test Server", url: "https://example.com", username: "tester")
+        context.insert(server)
+        context.insert(Book(
+            title: "Remote Book", duration: 100,
+            isRemote: true, serverId: server.id
+        ))
+        try context.save()
+
+        let service = ServerRemovalService(
+            deleteToken: { _ in },
+            persistFinalDeletion: { serverId, cont in
+                try await MainActor.run {
+                    let ctx = ModelContext(cont)
+                    let descriptor = FetchDescriptor<ABSServer>(predicate: #Predicate { $0.id == serverId })
+                    guard let srv = try ctx.fetch(descriptor).first else { return }
+                    let books = try ctx.fetch(FetchDescriptor<Book>(
+                        predicate: #Predicate { $0.serverId == serverId }
+                    ))
+                    for book in books {
+                        try LibraryDeletionTransaction.stageBookDeletion(book, deviceID: nil, in: ctx)
+                    }
+                    let journalDescriptor = FetchDescriptor<ServerRemovalJournalEntry>(
+                        predicate: #Predicate { $0.serverID == serverId }
+                    )
+                    for entry in try ctx.fetch(journalDescriptor) {
+                        ctx.delete(entry)
+                    }
+                    ctx.delete(srv)
+                    try ctx.save()
+                }
+            }
+        )
+
+        try await service.removeServer(server, modelContext: context)
+
+        let remainingServers = try context.fetch(FetchDescriptor<ABSServer>())
+        XCTAssertTrue(remainingServers.isEmpty)
+
+        let journals = try context.fetch(FetchDescriptor<ServerRemovalJournalEntry>())
+        XCTAssertTrue(journals.isEmpty)
+
+        let books = try context.fetch(FetchDescriptor<Book>())
+        XCTAssertTrue(books.isEmpty)
+    }
+
+    @MainActor
+    func testResumePendingRemovalCompletesAfterCrash() async throws {
+        let container = try makeInMemoryContainer()
+        let context = ModelContext(container)
+        let server = ABSServer(name: "Test Server", url: "https://example.com", username: "tester")
+        context.insert(server)
+        context.insert(Book(
+            title: "Remote Book", duration: 100,
+            isRemote: true, serverId: server.id
+        ))
+        let journal = ServerRemovalJournalEntry(
+            serverID: server.id,
+            normalizedURL: server.normalizedURL,
+            displayName: server.name,
+            previousIsActive: true,
+            phaseRaw: "prepared"
+        )
+        context.insert(journal)
+        server.isActive = false
+        try context.save()
+
+        let service = ServerRemovalService(
+            deleteToken: { _ in },
+            persistFinalDeletion: { serverId, cont in
+                try await MainActor.run {
+                    let ctx = ModelContext(cont)
+                    let descriptor = FetchDescriptor<ABSServer>(predicate: #Predicate { $0.id == serverId })
+                    guard let srv = try ctx.fetch(descriptor).first else { return }
+                    let books = try ctx.fetch(FetchDescriptor<Book>(
+                        predicate: #Predicate { $0.serverId == serverId }
+                    ))
+                    for book in books {
+                        try LibraryDeletionTransaction.stageBookDeletion(book, deviceID: nil, in: ctx)
+                    }
+                    let journalDescriptor = FetchDescriptor<ServerRemovalJournalEntry>(
+                        predicate: #Predicate { $0.serverID == serverId }
+                    )
+                    for entry in try ctx.fetch(journalDescriptor) {
+                        ctx.delete(entry)
+                    }
+                    ctx.delete(srv)
+                    try ctx.save()
+                }
+            }
+        )
+
+        _ = service
+        try await ServerRemovalService.resumePendingRemovals(container: container)
+
+        let remainingServers = try ModelContext(container).fetch(FetchDescriptor<ABSServer>())
+        XCTAssertTrue(remainingServers.isEmpty)
+
+        let journals = try ModelContext(container).fetch(FetchDescriptor<ServerRemovalJournalEntry>())
+        XCTAssertTrue(journals.isEmpty)
+
+        let books = try ModelContext(container).fetch(FetchDescriptor<Book>())
+        XCTAssertTrue(books.isEmpty)
     }
 
     private func makeInMemoryContainer() throws -> ModelContainer {
-        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
-        return try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
+        let schema = Schema(versionedSchema: SchemaV6.self)
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        return try ModelContainer(for: schema, configurations: [config])
     }
 }
 
 private enum TestError: Error {
-    case remoteCleanupFailed
+    case tokenDeletionFailed
     case persistenceFailed
-}
-
-private actor TokenRecorder {
-    private(set) var deletedTokenURL: String?
-    private(set) var restoredToken: (token: String, url: String)?
-
-    func recordDeletion(url: String) {
-        deletedTokenURL = url
-    }
-
-    func recordRestore(token: String, url: String) {
-        restoredToken = (token, url)
-    }
 }

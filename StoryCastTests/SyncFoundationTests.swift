@@ -1,4 +1,5 @@
 import CloudKit
+import Foundation
 import SwiftData
 import XCTest
 @testable import StoryCast
@@ -355,6 +356,35 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertEqual(books.first(where: { $0.id == bookID })?.title, "Preserved")
     }
 
+    func testV5StoreMigratesToV6WithEmptyDurableJournals() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("V5toV6_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("default.store")
+        let bookID = UUID()
+        do {
+            let schema = Schema(versionedSchema: SchemaV5.self)
+            let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+            let container = try ModelContainer(for: schema, configurations: [config])
+            let context = ModelContext(container)
+            context.insert(Book(id: bookID, title: "Preserved V5", localFileName: "book.m4b", duration: 1))
+            try context.save()
+        }
+
+        let schema = Schema(versionedSchema: SchemaV6.self)
+        let config = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
+        let container = try ModelContainer(
+            for: schema,
+            migrationPlan: StoryCastMigrationPlan.self,
+            configurations: [config]
+        )
+        let context = ModelContext(container)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<Book>()).first(where: { $0.id == bookID })?.title, "Preserved V5")
+        XCTAssertTrue(try context.fetch(FetchDescriptor<StorageCleanupJournalEntry>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SyncLocalMutation>()).isEmpty)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SyncInboxRetryState>()).isEmpty)
+    }
+
     func testPlannerCreatesDependencyOrderedFullLibraryOutbox() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
@@ -603,7 +633,7 @@ final class SyncFoundationTests: XCTestCase {
     }
 
     func testInboxRepairsStaleCloudMetadataAndAcceptsNewerWinner() async throws {
-        let container = try makeV5Container()
+        let container = try makeContainer()
         let context = ModelContext(container)
         let folder = Folder(name: "Local Winner", isSystem: false, sortOrder: 1)
         let stateID = "folder:\(folder.id.uuidString.lowercased())"
@@ -737,8 +767,299 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertEqual(bookInbox.stateRaw, "applied")
     }
 
+    func testIncomingTombstoneRetainsSharedAudioAndCleansDiscardedAssetState() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let fileName = "inbox-shared-\(UUID().uuidString).m4b"
+        try await StorageManager.shared.setupStoryCastLibraryDirectory()
+        let fileURL = StorageManager.shared.storyCastLibraryURL.appendingPathComponent(fileName)
+        try Data("audio".utf8).write(to: fileURL)
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let deletedBook = Book(title: "Deleted", localFileName: fileName, duration: 120, isImported: true)
+        let survivingBook = Book(title: "Survives", localFileName: fileName, duration: 120, isImported: true)
+        let asset = SyncAsset(
+            bookID: deletedBook.id,
+            kindRaw: SyncAssetKind.audio.rawValue,
+            originalFileName: fileName,
+            pathExtension: "m4b",
+            contentTypeIdentifier: "public.audiovisual-content",
+            byteCount: 5,
+            sha256Hex: "digest",
+            localRelativePath: fileName
+        )
+        context.insert(deletedBook)
+        context.insert(survivingBook)
+        context.insert(asset)
+        try context.save()
+
+        let zoneID = CKRecordZone.ID(zoneName: "StoryCastLibraryV1")
+        let payload = CloudSyncTombstonePayload(
+            entityKind: .book,
+            entityID: deletedBook.id.uuidString.lowercased(),
+            deletedAt: Date(),
+            revision: 1,
+            deviceID: "device-a"
+        )
+        let record = try CloudSyncRecordCodec.makeRecord(
+            type: .tombstone,
+            recordName: SyncRecordName.tombstone(kind: .book, id: deletedBook.id.uuidString.lowercased()),
+            zoneID: zoneID,
+            payload: payload
+        )
+
+        try await SyncInboxApplier.stage(record: record, container: container)
+
+        var verification = ModelContext(container)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<Book>()).map(\.id), [survivingBook.id])
+        XCTAssertTrue(try verification.fetch(FetchDescriptor<SyncAsset>()).isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<StorageCleanupJournalEntry>()).map(\.relativePath), [fileName])
+
+        let survivor = try XCTUnwrap(try verification.fetch(FetchDescriptor<Book>()).first)
+        try await LibraryBookActions(modelContext: verification).deleteBook(survivor)
+        verification = ModelContext(container)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+        XCTAssertTrue(try verification.fetch(FetchDescriptor<StorageCleanupJournalEntry>()).isEmpty)
+    }
+
+    func testMissingIncomingAssetRemainsPendingForRedelivery() async throws {
+        let container = try makeContainer()
+        let assetID = UUID()
+        let payload = CloudSyncAssetPayload(
+            assetID: assetID,
+            bookID: UUID(),
+            kind: .audio,
+            contentRevision: 1,
+            originalFileName: "missing.m4b",
+            cloudRelativePath: "assets/missing.m4b",
+            pathExtension: "m4b",
+            contentTypeIdentifier: "public.audiovisual-content",
+            byteCount: 1,
+            sha256Hex: "digest",
+            readyAt: Date()
+        )
+        let record = try CloudSyncRecordCodec.makeRecord(
+            type: .asset,
+            recordName: SyncRecordName.asset(assetID, revision: 1),
+            zoneID: CKRecordZone.ID(zoneName: "StoryCastLibraryV1"),
+            payload: payload
+        )
+
+        do {
+            try await SyncInboxApplier.stage(record: record, container: container)
+            XCTFail("Expected a missing CKAsset to defer application")
+        } catch let error as SyncInboxError {
+            guard case .missingAsset = error else {
+                return XCTFail("Expected missing asset error, got \(error)")
+            }
+        }
+
+        var verification = ModelContext(container)
+        let inbox = try XCTUnwrap(try verification.fetch(FetchDescriptor<SyncInboxRecord>()).first)
+        XCTAssertEqual(inbox.stateRaw, "pending")
+        let retry = try XCTUnwrap(try verification.fetch(FetchDescriptor<SyncInboxRetryState>()).first)
+        XCTAssertEqual(retry.attemptCount, 1)
+        retry.nextRetryAt = .distantPast
+        try verification.save()
+
+        try await SyncInboxApplier.drain(container: container)
+        verification = ModelContext(container)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<SyncInboxRecord>()).first?.stateRaw, "pending")
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<SyncInboxRetryState>()).first?.attemptCount, 1)
+    }
+
+    func testStagedIncomingAssetRetriesAfterTransientInstallationFailure() async throws {
+        let container = try makeContainer()
+        let assetID = UUID()
+        let sourceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("inbox-asset-\(UUID().uuidString).m4b")
+        try Data("asset".utf8).write(to: sourceURL)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let fingerprint = try SyncFileHasher.fingerprint(of: sourceURL)
+        let recordName = SyncRecordName.asset(assetID, revision: 1)
+        let zoneID = CKRecordZone.ID(zoneName: "StoryCastLibraryV1")
+
+        let invalidPayload = CloudSyncAssetPayload(
+            assetID: assetID,
+            bookID: UUID(),
+            kind: .audio,
+            contentRevision: 1,
+            originalFileName: "asset.m4b",
+            cloudRelativePath: "assets/asset.m4b",
+            pathExtension: "m4b",
+            contentTypeIdentifier: "public.audiovisual-content",
+            byteCount: fingerprint.byteCount,
+            sha256Hex: "invalid",
+            readyAt: Date()
+        )
+        let record = try CloudSyncRecordCodec.makeAssetRecord(
+            payload: invalidPayload,
+            recordName: recordName,
+            zoneID: zoneID,
+            fileURL: sourceURL
+        )
+
+        do {
+            try await SyncInboxApplier.stage(record: record, container: container)
+            XCTFail("Expected an invalid staged asset to fail verification")
+        } catch {
+        }
+
+        var context = ModelContext(container)
+        let retry = try XCTUnwrap(try context.fetch(FetchDescriptor<SyncInboxRetryState>()).first)
+        XCTAssertNotNil(retry.stagedAssetRelativePath)
+        let correctedPayload = CloudSyncAssetPayload(
+            assetID: assetID,
+            bookID: invalidPayload.bookID,
+            kind: .audio,
+            contentRevision: 1,
+            originalFileName: "asset.m4b",
+            cloudRelativePath: "assets/asset.m4b",
+            pathExtension: "m4b",
+            contentTypeIdentifier: "public.audiovisual-content",
+            byteCount: fingerprint.byteCount,
+            sha256Hex: fingerprint.sha256Hex,
+            readyAt: invalidPayload.readyAt
+        )
+        let inbox = try XCTUnwrap(try context.fetch(FetchDescriptor<SyncInboxRecord>()).first)
+        inbox.payloadData = try CloudSyncRecordCodec.encodePayload(correctedPayload)
+        retry.nextRetryAt = .distantPast
+        try context.save()
+
+        try await SyncInboxApplier.drain(container: container)
+
+        context = ModelContext(container)
+        let installedAsset = try XCTUnwrap(try context.fetch(FetchDescriptor<SyncAsset>()).first)
+        XCTAssertEqual(installedAsset.sha256Hex, fingerprint.sha256Hex)
+        XCTAssertEqual(try context.fetch(FetchDescriptor<SyncInboxRecord>()).first?.stateRaw, "applied")
+        XCTAssertTrue(try context.fetch(FetchDescriptor<SyncInboxRetryState>()).isEmpty)
+        let installedURL = StorageManager.shared.storyCastLibraryURL
+            .appendingPathComponent("icloud-\(assetID.uuidString.lowercased()).m4b")
+        defer { try? FileManager.default.removeItem(at: installedURL) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: installedURL.path))
+    }
+
+    func testBlockedLegacyAssetIsEligibleForDirectCloudRetry() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let assetID = UUID()
+        let recordName = SyncRecordName.asset(assetID, revision: 1)
+        let payload = CloudSyncAssetPayload(
+            assetID: assetID,
+            bookID: UUID(),
+            kind: .audio,
+            contentRevision: 1,
+            originalFileName: "legacy.m4b",
+            cloudRelativePath: "assets/legacy.m4b",
+            pathExtension: "m4b",
+            contentTypeIdentifier: "public.audiovisual-content",
+            byteCount: 1,
+            sha256Hex: "digest",
+            readyAt: Date()
+        )
+        context.insert(SyncInboxRecord(
+            id: recordName,
+            recordType: CloudSyncRecordType.asset.rawValue,
+            payloadData: try CloudSyncRecordCodec.encodePayload(payload),
+            stateRaw: "blocked"
+        ))
+        try context.save()
+
+        XCTAssertEqual(SyncInboxApplier.retryableUnstagedAssetRecordNames(container: container), [recordName])
+    }
+
+    func testIncomingAssetDoesNotOverwriteImportedFilenameCollision() async throws {
+        let container = try makeContainer()
+        let assetID = UUID()
+        let fileName = "icloud-\(assetID.uuidString.lowercased()).m4b"
+        try await StorageManager.shared.setupStoryCastLibraryDirectory()
+        let existingURL = StorageManager.shared.storyCastLibraryURL.appendingPathComponent(fileName)
+        try Data("imported".utf8).write(to: existingURL)
+        defer {
+            try? FileManager.default.removeItem(at: existingURL)
+            let installedPath = try? ModelContext(container).fetch(FetchDescriptor<SyncAsset>()).first?.localRelativePath
+            if let path = installedPath {
+                try? FileManager.default.removeItem(
+                    at: StorageManager.shared.storyCastLibraryURL.appendingPathComponent(path)
+                )
+            }
+        }
+
+        let sourceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("collision-source-\(UUID().uuidString).m4b")
+        try Data("synced".utf8).write(to: sourceURL)
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+        let fingerprint = try SyncFileHasher.fingerprint(of: sourceURL)
+        let payload = CloudSyncAssetPayload(
+            assetID: assetID,
+            bookID: UUID(),
+            kind: .audio,
+            contentRevision: 1,
+            originalFileName: "synced.m4b",
+            cloudRelativePath: "assets/synced.m4b",
+            pathExtension: "m4b",
+            contentTypeIdentifier: "public.audiovisual-content",
+            byteCount: fingerprint.byteCount,
+            sha256Hex: fingerprint.sha256Hex,
+            readyAt: Date()
+        )
+        let context = ModelContext(container)
+        context.insert(Book(title: "Imported", localFileName: fileName, duration: 100, isImported: true))
+        try context.save()
+        let record = try CloudSyncRecordCodec.makeAssetRecord(
+            payload: payload,
+            recordName: SyncRecordName.asset(assetID, revision: 1),
+            zoneID: CKRecordZone.ID(zoneName: "StoryCastLibraryV1"),
+            fileURL: sourceURL
+        )
+
+        try await SyncInboxApplier.stage(record: record, container: container)
+
+        let verification = ModelContext(container)
+        XCTAssertEqual(try Data(contentsOf: existingURL), Data("imported".utf8))
+        let installedPath = try XCTUnwrap(try verification.fetch(FetchDescriptor<SyncAsset>()).first?.localRelativePath)
+        XCTAssertNotEqual(installedPath, fileName)
+        XCTAssertTrue(installedPath.hasPrefix("icloud-sync-"))
+        XCTAssertTrue(installedPath.hasSuffix(".m4b"))
+        let installedURL = StorageManager.shared.storyCastLibraryURL.appendingPathComponent(installedPath)
+        XCTAssertEqual(try Data(contentsOf: installedURL), Data("synced".utf8))
+    }
+
+    func testIncomingFolderTombstoneCreatesUnfiledWithReassignment() async throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let deletedFolder = Folder(name: "Deleted", isSystem: false, sortOrder: 1)
+        let book = Book(title: "Moved", localFileName: "moved.m4b", duration: 100, isImported: true, folder: deletedFolder)
+        context.insert(deletedFolder)
+        context.insert(book)
+        try context.save()
+
+        let payload = CloudSyncTombstonePayload(
+            entityKind: .folder,
+            entityID: deletedFolder.id.uuidString.lowercased(),
+            deletedAt: Date(),
+            revision: 1,
+            deviceID: "device-a"
+        )
+        let record = try CloudSyncRecordCodec.makeRecord(
+            type: .tombstone,
+            recordName: SyncRecordName.tombstone(kind: .folder, id: deletedFolder.id.uuidString.lowercased()),
+            zoneID: CKRecordZone.ID(zoneName: "StoryCastLibraryV1"),
+            payload: payload
+        )
+
+        try await SyncInboxApplier.stage(record: record, container: container)
+
+        let verification = ModelContext(container)
+        let unfiled = try XCTUnwrap(try verification.fetch(FetchDescriptor<Folder>()).first(where: { $0.isSystem }))
+        XCTAssertFalse(try verification.fetch(FetchDescriptor<Folder>()).contains { $0.id == deletedFolder.id })
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<Book>()).first?.folder?.id, unfiled.id)
+        XCTAssertEqual(try verification.fetch(FetchDescriptor<SyncTombstone>()).count, 1)
+    }
+
     private func makeContainer() throws -> ModelContainer {
-        let schema = Schema(versionedSchema: SchemaV4.self)
+        let schema = Schema(versionedSchema: SchemaV6.self)
         let config = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true,

@@ -98,7 +98,8 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
 
     private func finishDownload(bookId: UUID, localURL: URL, fileExtension: String, container: ModelContainer) async {
         defer { cancelTimeoutTask(for: bookId); modelContainers.removeValue(forKey: bookId) }
-        let fileName = "\(bookId.uuidString)_remote.\(fileExtension)"
+        let safeExtension = safeFileExtension(fileExtension) ?? "m4b"
+        let fileName = "\(bookId.uuidString)_remote.\(safeExtension)"
         let fileManager = FileManager.default
         let context = ModelContext(container)
         let destURL = StorageManager.shared.remoteAudioCacheURL(for: fileName)
@@ -150,16 +151,37 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
     }
 
     private func rollbackDownload(book: Book, previousIsDownloaded: Bool, previousLocalCachePath: String?, context: ModelContext) {
-        safeRemoveFile(at: StorageManager.shared.remoteAudioCacheURL(for: book.localCachePath ?? ""), label: "corrupt destination file during error recovery")
+        if let cachePath = book.localCachePath,
+           StorageCleanupCoordinator.isSafeRelativePath(cachePath) {
+            safeRemoveFile(
+                at: StorageManager.shared.remoteAudioCacheURL(for: cachePath),
+                label: "corrupt destination file during error recovery"
+            )
+        }
         book.isDownloaded = previousIsDownloaded
         book.localCachePath = previousLocalCachePath
         context.rollback()
     }
 
     private func safeRemoveFile(at url: URL, label: String) {
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return }
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            AppLogger.sync.warning("Skipped non-file \(label): \(url.path, privacy: .private)")
+            return
+        }
         do { try FileManager.default.removeItem(at: url) }
         catch { AppLogger.sync.warning("Failed to remove \(label): \(error.localizedDescription, privacy: .private)") }
+    }
+
+    private func safeFileExtension(_ value: String) -> String? {
+        let normalized = value.lowercased()
+        guard !normalized.isEmpty,
+              normalized.unicodeScalars.allSatisfy({
+                  CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "+-")).contains($0)
+              }) else {
+            return nil
+        }
+        return normalized
     }
 
     private func safeMoveFile(from source: URL, to destination: URL, label: String) {

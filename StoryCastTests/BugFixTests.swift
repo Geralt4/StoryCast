@@ -237,49 +237,6 @@ nonisolated final class BugFixTests: XCTestCase {
         XCTAssertEqual(coordinator.debugTaskCount, 0)
     }
 
-    // MARK: - Bug 8: StorageBackupManager copies all DB files
-
-    func testDatabaseFilesIncludesWALAndSHM() {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        let storeFile = tempDir.appendingPathComponent("default.store")
-        let walFile = storeFile.appendingPathExtension("wal")
-        let shmFile = storeFile.appendingPathExtension("shm")
-
-        FileManager.default.createFile(atPath: storeFile.path, contents: Data("store".utf8))
-        FileManager.default.createFile(atPath: walFile.path, contents: Data("wal".utf8))
-        FileManager.default.createFile(atPath: shmFile.path, contents: Data("shm".utf8))
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: walFile.path), "WAL file should exist")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: shmFile.path), "SHM file should exist")
-
-        let storeExists = FileManager.default.fileExists(atPath: storeFile.path)
-        let walExists = FileManager.default.fileExists(atPath: walFile.path)
-        let shmExists = FileManager.default.fileExists(atPath: shmFile.path)
-
-        XCTAssertTrue(storeExists && walExists && shmExists,
-                      "All three SQLite files must be present for a complete backup")
-    }
-
-    func testBackupDatabaseFileNamingPattern() {
-        let allFiles = ["default.store", "default.store.wal", "default.store.shm"]
-        let expectedSuffixes = [".store", ".wal.store", ".shm.store"]
-
-        let timestamp = "2026-01-01_12-00-00"
-        let generatedNames = allFiles.map { file -> String in
-            let ext = (file as NSString).pathExtension
-            let nameSuffix = ext == "store" ? "" : ".\(ext)"
-            return "StoryCast_backup_\(timestamp)\(nameSuffix).store"
-        }
-
-        for (name, expected) in zip(generatedNames, expectedSuffixes) {
-            XCTAssertTrue(name.hasSuffix(expected), "Backup file '\(name)' should have suffix '\(expected)'")
-        }
-    }
-
     // MARK: - Bug 9: SleepTimer fires on paused playback
 
     @MainActor

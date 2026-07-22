@@ -1,19 +1,6 @@
 import Foundation
 import SwiftData
 
-// MARK: - Versioned Schema
-
-/// v1.0 schema for future migrations.
-enum SchemaV1: VersionedSchema {
-    static let versionIdentifier = Schema.Version(1, 0, 0)
-
-    static var models: [any PersistentModel.Type] {
-        [Book.self, Chapter.self, Folder.self]
-    }
-}
-
-// MARK: - Chapter
-
 enum ChapterSource: String, Codable, Identifiable {
     case embedded
     case unknown
@@ -44,7 +31,6 @@ class Chapter {
         self.book = book
     }
 
-    /// A chapter is valid when its time range is non-negative, finite, and non-empty.
     var isValid: Bool {
         startTime.isFinite && endTime.isFinite &&
         startTime >= 0 && endTime >= 0 &&
@@ -65,8 +51,6 @@ class Book {
     var coverArtFileName: String?
     @Relationship(deleteRule: .cascade, inverse: \Chapter.book) var chapters: [Chapter] = []
     var folder: Folder?
-    
-    // MARK: - Remote Book Properties
     var isRemote: Bool
     var remoteItemId: String?
     var remoteLibraryId: String?
@@ -74,30 +58,8 @@ class Book {
     var isDownloaded: Bool
     var localCachePath: String?
     var lastSyncDate: Date?
-    
-    // MARK: - Cached Search Fields
-    // Normalized fields for efficient search (updated when title/author changes)
     private(set) var normalizedTitle: String = ""
     private(set) var normalizedAuthor: String = ""
-
-    func updateSearchFields() {
-        normalizedTitle = Self.normalizeForSearch(title)
-        normalizedAuthor = Self.normalizeForSearch(author)
-    }
-    
-    static func normalizeForSearch(_ value: String?) -> String {
-        guard let value = value, !value.isEmpty else { return "" }
-        return value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .folding(options: .diacriticInsensitive, locale: .current)
-    }
-    
-    func matchesSearch(query: String) -> Bool {
-        let normalizedQuery = Self.normalizeForSearch(query)
-        guard !normalizedQuery.isEmpty else { return true }
-        return normalizedTitle.contains(normalizedQuery) || 
-               normalizedAuthor.contains(normalizedQuery)
-    }
 
     init(
         id: UUID = UUID(),
@@ -105,7 +67,7 @@ class Book {
         author: String? = nil,
         localFileName: String = "",
         duration: Double,
-        lastPlaybackPosition: Double = 0.0,
+        lastPlaybackPosition: Double = 0,
         lastPlayedDate: Date? = nil,
         isImported: Bool = false,
         folder: Folder? = nil,
@@ -135,10 +97,27 @@ class Book {
         self.isDownloaded = isDownloaded
         self.localCachePath = localCachePath
         self.lastSyncDate = lastSyncDate
-        self.updateSearchFields()
+        updateSearchFields()
     }
-    
-    /// A book is valid when its title is non-empty after trimming whitespace.
+
+    func updateSearchFields() {
+        normalizedTitle = Self.normalizeForSearch(title)
+        normalizedAuthor = Self.normalizeForSearch(author)
+    }
+
+    static func normalizeForSearch(_ value: String?) -> String {
+        guard let value, !value.isEmpty else { return "" }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .folding(options: .diacriticInsensitive, locale: .current)
+    }
+
+    func matchesSearch(query: String) -> Bool {
+        let normalizedQuery = Self.normalizeForSearch(query)
+        guard !normalizedQuery.isEmpty else { return true }
+        return normalizedTitle.contains(normalizedQuery) || normalizedAuthor.contains(normalizedQuery)
+    }
+
     var isValid: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -152,9 +131,7 @@ class Folder {
     var sortOrder: Int
     @Relationship(deleteRule: .nullify, inverse: \Book.folder) var books: [Book] = []
 
-    var bookCount: Int {
-        books.count
-    }
+    var bookCount: Int { books.count }
 
     init(id: UUID = UUID(), name: String, isSystem: Bool = false, sortOrder: Int = 0) {
         self.id = id
@@ -164,104 +141,8 @@ class Folder {
     }
 }
 
-@Model
-class SchemaV3Marker {
-    @Attribute(.unique) var id: UUID
-    var schemaVersion: Int
-    
-    init(id: UUID = UUID(), schemaVersion: Int = 3) {
-        self.id = id
-        self.schemaVersion = schemaVersion
-    }
-}
-
-// MARK: - Schema V2 (Remote Books Support)
-
-enum SchemaV2: VersionedSchema {
-    static let versionIdentifier = Schema.Version(2, 0, 0)
-    
-    static var models: [any PersistentModel.Type] {
-        [Book.self, Chapter.self, Folder.self, ABSServer.self]
-    }
-}
-
-// MARK: - Schema V3
-
-enum SchemaV3: VersionedSchema {
-    static let versionIdentifier = Schema.Version(3, 0, 0)
-
-    static var models: [any PersistentModel.Type] {
-        [Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self]
-    }
-}
-
-// MARK: - Schema V4 (Current)
-
-enum SchemaV4: VersionedSchema {
-    static let versionIdentifier = Schema.Version(4, 0, 0)
-
-    static var models: [any PersistentModel.Type] {
-        [
-            Book.self,
-            Chapter.self,
-            Folder.self,
-            ABSServer.self,
-            SchemaV3Marker.self,
-            SyncRuntime.self,
-            SyncEntityState.self,
-            SyncAsset.self,
-            SyncOutboxOperation.self,
-            SyncInboxRecord.self,
-            SyncProgressHead.self,
-            SyncTombstone.self,
-            SyncMigrationJournal.self
-        ]
-    }
-}
-
-enum SchemaV5: VersionedSchema {
-    static let versionIdentifier = Schema.Version(5, 0, 0)
-    static var models: [any PersistentModel.Type] {
-        SchemaV4.models + [SyncAccountBinding.self, SyncCloudRecordState.self,
-            SyncReplicaUploadMarker.self, SyncAssetRetentionState.self]
-    }
-}
-
-// MARK: - Migration Plan
-
-enum StoryCastMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] {
-        [SchemaV1.self, SchemaV2.self, SchemaV3.self, SchemaV4.self, SchemaV5.self]
-    }
-
-    static var stages: [MigrationStage] {
-        [migrateV1toV2, migrateV2toV3, migrateV3toV4, migrateV4toV5]
-    }
-
-    static let migrateV1toV2 = MigrationStage.lightweight(
-        fromVersion: SchemaV1.self,
-        toVersion: SchemaV2.self
-    )
-
-    static let migrateV2toV3 = MigrationStage.custom(
-        fromVersion: SchemaV2.self,
-        toVersion: SchemaV3.self,
-        willMigrate: nil,
-        didMigrate: { _ in }
-    )
-
-    static let migrateV3toV4 = MigrationStage.lightweight(
-        fromVersion: SchemaV3.self,
-        toVersion: SchemaV4.self
-    )
-
-    static let migrateV4toV5 = MigrationStage.lightweight(fromVersion: SchemaV4.self, toVersion: SchemaV5.self)
-}
-
-// MARK: - Current Schema Version
-
 nonisolated enum CurrentSchema {
-    static let version = SchemaV5.versionIdentifier
-    static let versionString = "5.0.0"
-    static let schemaName = "SchemaV5"
+    static let version = SchemaV6.versionIdentifier
+    static let versionString = "6.0.0"
+    static let schemaName = "SchemaV6"
 }
