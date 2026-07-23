@@ -41,7 +41,7 @@ final class FolderBookSearchHandler {
             return cachedFilteredBooks
         }
 
-        return cachedFilteredBooks
+        return books.filter { $0.matchesSearch(query: normalizedSearchText) }
     }
 
     func onDisappear() {

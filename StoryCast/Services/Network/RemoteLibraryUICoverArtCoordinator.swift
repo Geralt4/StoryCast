@@ -183,6 +183,10 @@ final class RemoteLibraryUICoverArtCoordinator {
         } catch is CancellationError {
             return
         } catch {
+            if let apiError = error as? APIError, !apiError.isTransient {
+                AppLogger.network.debug("Cover art non-transient failure for \(request.itemId, privacy: .private): \(error.localizedDescription, privacy: .private)")
+                return
+            }
             AppLogger.network.debug("Cover art download failed for \(request.itemId, privacy: .private): \(error.localizedDescription, privacy: .private)")
 
             await MainActor.run {
@@ -198,7 +202,9 @@ final class RemoteLibraryUICoverArtCoordinator {
                 self.failures[compoundKey] = failure
 
                 guard !failure.isExhausted else { return }
-                let delay = failure.backoffDelay
+                let baseDelay = failure.backoffDelay
+                let jitter = Double.random(in: 0..<baseDelay / 2)
+                let delay = baseDelay + jitter
                 let request = request
                 let container = container
                 // Install a retry task. We allocate a fresh generation so

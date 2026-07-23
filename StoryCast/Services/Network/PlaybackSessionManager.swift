@@ -158,6 +158,7 @@ private extension PlaybackSessionManager {
     func handleAppWillEnterForeground() {
         guard activeSessionId != nil else { return }
         isInBackground = false
+        isTerminating = false
         stopBackgroundSyncTimer()
         Task { await syncProgress() }
         startSyncTimer()
@@ -359,6 +360,7 @@ private extension PlaybackSessionManager {
         totalTimeListened = 0
         lastObservedTime = 0
         isInBackground = false
+        isTerminating = false
         isSeeking = false
         isSeekingClearTask?.cancel()
         isSeekingClearTask = nil

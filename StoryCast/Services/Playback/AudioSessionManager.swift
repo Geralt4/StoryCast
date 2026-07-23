@@ -103,7 +103,7 @@ final class AudioSessionManager {
                   let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
             
-            let type = AVAudioSession.InterruptionType(rawValue: typeValue) ?? .ended
+            guard let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
             
             Task { @MainActor [weak self] in

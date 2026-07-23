@@ -155,8 +155,10 @@ struct ServerSetupView: View {
             )
 
             // 3. Store token in Keychain.
+            var tokenSaved = false
             do {
                 try await AudiobookshelfAuth.shared.saveToken(loginResponse.user.token, for: normalizedURL)
+                tokenSaved = true
             } catch {
                 AppLogger.network.error("Failed to save token to Keychain: \(error.localizedDescription, privacy: .private)")
                 // Continue anyway - the login succeeded, just can't persist the token
@@ -164,8 +166,8 @@ struct ServerSetupView: View {
 
             // 4. Persist the server in SwiftData.
             if let existing = existingServer {
-                // If URL changed, delete the old token from Keychain
-                if existing.normalizedURL != normalizedURL {
+                // If URL changed, delete the old token from Keychain only if the new token was saved
+                if existing.normalizedURL != normalizedURL && tokenSaved {
                     do {
                         try await AudiobookshelfAuth.shared.deleteToken(for: existing.normalizedURL)
                     } catch {

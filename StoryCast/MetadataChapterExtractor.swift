@@ -184,9 +184,11 @@ class MetadataChapterExtractor {
         guard !chapters.isEmpty else { return [] }
         var resolved: [ParsedID3Chapter] = []
         for (index, chapter) in chapters.enumerated() {
+            guard chapter.startTime < chapter.endTime else { continue }
             let nextStart = index + 1 < chapters.count ? chapters[index + 1].startTime : assetDuration
             let endTime = chapter.endTime > chapter.startTime ? chapter.endTime : nextStart
-            resolved.append(ParsedID3Chapter(startTime: chapter.startTime, endTime: max(endTime, chapter.startTime), title: chapter.title))
+            let clampedEnd = assetDuration > 0 ? min(endTime, assetDuration) : endTime
+            resolved.append(ParsedID3Chapter(startTime: chapter.startTime, endTime: max(clampedEnd, chapter.startTime), title: chapter.title))
         }
         return resolved
     }
