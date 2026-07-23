@@ -179,8 +179,13 @@ enum SyncInboxApplier {
 
     static func retryableUnstagedAssetRecordNames(container: ModelContainer) -> [String] {
         let context = ModelContext(container)
-        guard let inboxes = try? context.fetch(FetchDescriptor<SyncInboxRecord>()),
-              let retries = try? context.fetch(FetchDescriptor<SyncInboxRetryState>()) else {
+        let inboxes: [SyncInboxRecord]
+        let retries: [SyncInboxRetryState]
+        do {
+            inboxes = try context.fetch(FetchDescriptor<SyncInboxRecord>())
+            retries = try context.fetch(FetchDescriptor<SyncInboxRetryState>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch inbox/retry states in retryableUnstagedAssetRecordNames: \(error.localizedDescription)")
             return []
         }
         let retriesByRecordName = Dictionary(uniqueKeysWithValues: retries.map { ($0.recordName, $0) })
@@ -211,9 +216,8 @@ enum SyncInboxApplier {
             let runtime = try SyncRuntimeStore.runtime(in: context)
             let remoteID = payload.generationID.uuidString.lowercased()
             runtime.generationID = remoteID
-            if let binding = try? SyncAccountCoordinator.binding(in: context) {
-                binding.boundGenerationID = remoteID
-            }
+            let binding = try SyncAccountCoordinator.binding(in: context)
+            binding.boundGenerationID = remoteID
             runtime.updatedAt = Date()
             return true
 
@@ -409,7 +413,10 @@ enum SyncInboxApplier {
                 in: context
             ) else { return true }
             let chapter: Chapter
-            if chapters.indices.contains(payload.index) {
+            let titleMatches = chapters.filter { $0.title == payload.title && abs($0.startTime - payload.startTime) < 0.001 }
+            if titleMatches.count == 1, let matched = titleMatches.first {
+                chapter = matched
+            } else if chapters.indices.contains(payload.index) {
                 chapter = chapters[payload.index]
             } else {
                 chapter = Chapter(
@@ -611,7 +618,13 @@ enum SyncInboxApplier {
         payloadData: Data,
         in context: ModelContext
     ) -> SyncInboxRecord {
-        let records = (try? context.fetch(FetchDescriptor<SyncInboxRecord>())) ?? []
+        let records: [SyncInboxRecord]
+        do {
+            records = try context.fetch(FetchDescriptor<SyncInboxRecord>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch SyncInboxRecord in upsertInbox: \(error.localizedDescription)")
+            records = []
+        }
         if let existing = records.first(where: { $0.id == id }) {
             existing.recordType = recordType
             existing.payloadData = payloadData
@@ -725,7 +738,13 @@ enum SyncInboxApplier {
         localFileName: String,
         in context: ModelContext
     ) {
-        let books = (try? context.fetch(FetchDescriptor<Book>())) ?? []
+        let books: [Book]
+        do {
+            books = try context.fetch(FetchDescriptor<Book>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch books in updateBookAssetReferences: \(error.localizedDescription)")
+            return
+        }
         for book in books where book.id == payload.bookID && !book.isRemote {
             switch payload.kind {
             case .audio:
@@ -799,7 +818,13 @@ enum SyncInboxApplier {
         localFileName: String,
         in context: ModelContext
     ) {
-        let assets = (try? context.fetch(FetchDescriptor<SyncAsset>())) ?? []
+        let assets: [SyncAsset]
+        do {
+            assets = try context.fetch(FetchDescriptor<SyncAsset>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch assets in upsertAsset: \(error.localizedDescription)")
+            return
+        }
         let asset = assets.first(where: { $0.id == payload.assetID }) ?? {
             let asset = SyncAsset(
                 id: payload.assetID,
@@ -842,7 +867,13 @@ enum SyncInboxApplier {
         contentDigest: String,
         in context: ModelContext
     ) -> Bool {
-        let states = (try? context.fetch(FetchDescriptor<SyncEntityState>())) ?? []
+        let states: [SyncEntityState]
+        do {
+            states = try context.fetch(FetchDescriptor<SyncEntityState>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch entity states in shouldApply: \(error.localizedDescription)")
+            return false
+        }
         if let state = states.first(where: { $0.id == id }) {
             let decision = SyncVersionResolver.decide(
                 localRevision: state.revision, localModifiedAt: state.modifiedAt,
@@ -883,7 +914,13 @@ enum SyncInboxApplier {
         contentDigest: String,
         in context: ModelContext
     ) -> Bool {
-        let states = (try? context.fetch(FetchDescriptor<SyncEntityState>())) ?? []
+        let states: [SyncEntityState]
+        do {
+            states = try context.fetch(FetchDescriptor<SyncEntityState>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch entity states in isStale: \(error.localizedDescription)")
+            return false
+        }
         guard let state = states.first(where: { $0.id == id }) else { return false }
         let decision = SyncVersionResolver.decide(
             localRevision: state.revision, localModifiedAt: state.modifiedAt,
@@ -899,7 +936,13 @@ enum SyncInboxApplier {
     }
 
     private static func shouldInstallAsset(_ payload: CloudSyncAssetPayload, in context: ModelContext) -> Bool {
-        let assets = (try? context.fetch(FetchDescriptor<SyncAsset>())) ?? []
+        let assets: [SyncAsset]
+        do {
+            assets = try context.fetch(FetchDescriptor<SyncAsset>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch assets in shouldInstallAsset: \(error.localizedDescription)")
+            return true
+        }
         guard let local = assets.first(where: { $0.id == payload.assetID }) else { return true }
         if payload.contentRevision != local.contentRevision {
             if payload.contentRevision < local.contentRevision {
@@ -944,13 +987,25 @@ enum SyncInboxApplier {
     }
 
     private static func markForUpload(id: String, recordName: String, reason: String, in context: ModelContext) {
-        let markers = (try? context.fetch(FetchDescriptor<SyncReplicaUploadMarker>())) ?? []
+        let markers: [SyncReplicaUploadMarker]
+        do {
+            markers = try context.fetch(FetchDescriptor<SyncReplicaUploadMarker>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch upload markers in markForUpload: \(error.localizedDescription)")
+            return
+        }
         guard !markers.contains(where: { $0.id == id }) else { return }
         context.insert(SyncReplicaUploadMarker(id: id, recordName: recordName, reasonRaw: reason))
     }
 
     private static func removeUploadMarker(id: String, in context: ModelContext) {
-        let markers = (try? context.fetch(FetchDescriptor<SyncReplicaUploadMarker>())) ?? []
+        let markers: [SyncReplicaUploadMarker]
+        do {
+            markers = try context.fetch(FetchDescriptor<SyncReplicaUploadMarker>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch upload markers in removeUploadMarker: \(error.localizedDescription)")
+            return
+        }
         for marker in markers where marker.id == id { context.delete(marker) }
     }
 
@@ -960,7 +1015,13 @@ enum SyncInboxApplier {
         in context: ModelContext
     ) -> Bool {
         let normalizedID = entityID.lowercased()
-        let tombstones = (try? context.fetch(FetchDescriptor<SyncTombstone>())) ?? []
+        let tombstones: [SyncTombstone]
+        do {
+            tombstones = try context.fetch(FetchDescriptor<SyncTombstone>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch tombstones in isTombstoned: \(error.localizedDescription)")
+            return false
+        }
         return tombstones.contains {
             $0.entityKindRaw == kind.rawValue && $0.entityID.lowercased() == normalizedID
         }
@@ -988,7 +1049,13 @@ enum SyncInboxApplier {
 
     private static func upsertTombstone(_ payload: CloudSyncTombstonePayload, in context: ModelContext) {
         let id = SyncRecordName.tombstone(kind: payload.entityKind, id: payload.entityID)
-        let tombstones = (try? context.fetch(FetchDescriptor<SyncTombstone>())) ?? []
+        let tombstones: [SyncTombstone]
+        do {
+            tombstones = try context.fetch(FetchDescriptor<SyncTombstone>())
+        } catch {
+            AppLogger.sync.error("Failed to fetch tombstones in upsertTombstone: \(error.localizedDescription)")
+            return
+        }
         if let existing = tombstones.first(where: { $0.id == id }) {
             guard payload.revision >= existing.revision else { return }
             existing.deletedAt = payload.deletedAt

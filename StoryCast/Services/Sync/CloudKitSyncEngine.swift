@@ -382,22 +382,30 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
             }
 
             for failure in event.failedRecordSaves {
-                try await markFailure(
-                    failure.record.recordID,
-                    error: failure.error,
-                    operations: operations,
-                    context: context,
-                    syncEngine: syncEngine
-                )
+                do {
+                    try await markFailure(
+                        failure.record.recordID,
+                        error: failure.error,
+                        operations: operations,
+                        context: context,
+                        syncEngine: syncEngine
+                    )
+                } catch {
+                    recordSyncError(error.localizedDescription)
+                }
             }
             for (recordID, error) in event.failedRecordDeletes {
-                try await markFailure(
-                    recordID,
-                    error: error,
-                    operations: operations,
-                    context: context,
-                    syncEngine: syncEngine
-                )
+                do {
+                    try await markFailure(
+                        recordID,
+                        error: error,
+                        operations: operations,
+                        context: context,
+                        syncEngine: syncEngine
+                    )
+                } catch {
+                    recordSyncError(error.localizedDescription)
+                }
             }
             try SyncOutboxCompactor.compact(in: context)
             try context.save()
@@ -437,7 +445,7 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
                     SyncOutboxProcessor.markSent(operation)
                 }
             } catch {
-                try SyncRecordSystemFieldsStore.persist(record: serverRecord, kind: kind, in: context)
+                try? SyncRecordSystemFieldsStore.persist(record: serverRecord, kind: kind, in: context)
                 SyncOutboxProcessor.markRetry(operation, message: error.localizedDescription, retryAfter: Date())
             }
             syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID), .deleteRecord(recordID)])

@@ -31,11 +31,11 @@ enum SyncOutboxProcessor {
         let operations = try context.fetch(FetchDescriptor<SyncOutboxOperation>())
         let operationsByID = Dictionary(uniqueKeysWithValues: operations.map { ($0.id, $0) })
 
-        return try operations
+        return operations
             .filter { operation in
                 guard operation.stateRaw == "queued" else { return false }
                 guard operation.nextRetryAt.map({ $0 <= date }) ?? true else { return false }
-                let dependencyIDs = try SyncOutboxDependencyCodec.decode(operation.dependencyData)
+                guard let dependencyIDs = try? SyncOutboxDependencyCodec.decode(operation.dependencyData) else { return false }
                 return dependencyIDs.allSatisfy { operationsByID[$0]?.stateRaw == "sent" }
             }
             .sorted { lhs, rhs in

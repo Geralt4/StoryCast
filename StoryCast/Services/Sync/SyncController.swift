@@ -164,7 +164,8 @@ final class SyncController: ObservableObject {
                 context.insert(head)
                 return head
             }()
-            head.actionID = UUID()
+            // Keep actionID stable for the head lifetime so multi-device
+            // tiebreaks stay reproducible within a progress session.
             head.position = position
             head.actionAt = Date()
             head.sequence += 1
