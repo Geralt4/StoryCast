@@ -62,7 +62,8 @@ enum LibraryMaintenanceService {
         }
     }
 
-    nonisolated static func syncRemoteLibraries(container: ModelContainer) async {
+    @MainActor
+    static func syncRemoteLibraries(container: ModelContainer) async {
         let context = ModelContext(container)
         let descriptor = FetchDescriptor<ABSServer>(predicate: #Predicate { $0.isActive })
         guard let servers = try? context.fetch(descriptor), !servers.isEmpty else {
