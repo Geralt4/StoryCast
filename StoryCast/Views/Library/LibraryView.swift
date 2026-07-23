@@ -10,7 +10,11 @@ struct LibraryView: View {
     @State private var searchHandler = LibrarySearchHandler()
     @State private var importHandler = LibraryImportHandler()
     @State private var coordinator = LibraryViewCoordinator()
-    @State private var actionTask: Task<Void, Never>?
+    @State private var deleteBookTask: Task<Void, Never>?
+    @State private var deleteFolderTask: Task<Void, Never>?
+    @State private var moveFoldersTask: Task<Void, Never>?
+    @State private var deleteFoldersTask: Task<Void, Never>?
+    @State private var mergeFolderTask: Task<Void, Never>?
     @State private var showLibraryError = false
     @State private var libraryErrorMessage = ""
     @AppStorage("appearanceMode") private var appearanceModeRaw: String = AppearanceMode.automatic.rawValue
@@ -116,7 +120,15 @@ struct LibraryView: View {
                     coordinator.finishSearchBookDeletion(); deleteSearchBook(book)
                 }
             } message: { Text("Are you sure you want to delete \"\(coordinator.searchBookToDelete?.title ?? "this book")\"?") }
-            .onDisappear { actionTask?.cancel(); importHandler.onDisappear(); searchHandler.onDisappear() }
+            .onDisappear {
+                deleteBookTask?.cancel()
+                deleteFolderTask?.cancel()
+                moveFoldersTask?.cancel()
+                deleteFoldersTask?.cancel()
+                mergeFolderTask?.cancel()
+                importHandler.onDisappear()
+                searchHandler.onDisappear()
+            }
         }
     }
 
@@ -239,13 +251,13 @@ struct LibraryView: View {
     }
 
     private func deleteSearchBook(_ book: Book) {
-        actionTask?.cancel()
-        actionTask = Task { do { try await bookActions.deleteBook(book) } catch { presentLibraryError("Failed to delete book", error: error) } }
+        deleteBookTask?.cancel()
+        deleteBookTask = Task { do { try await bookActions.deleteBook(book) } catch { presentLibraryError("Failed to delete book", error: error) } }
     }
 
     private func deleteFolder(_ folder: Folder, into destination: Folder) {
-        actionTask?.cancel()
-        actionTask = Task {
+        deleteFolderTask?.cancel()
+        deleteFolderTask = Task {
             do {
                 try await folderOperations.deleteFolderWithDestination(folder, destination: destination)
             } catch {
@@ -255,8 +267,8 @@ struct LibraryView: View {
     }
 
     private func moveFolders(_ folderIDs: Set<UUID>, into destination: Folder) {
-        actionTask?.cancel()
-        actionTask = Task {
+        moveFoldersTask?.cancel()
+        moveFoldersTask = Task {
             do {
                 try await folderOperations.moveFolders(folderIDs, into: destination)
             } catch {
@@ -266,8 +278,8 @@ struct LibraryView: View {
     }
 
     private func deleteFolders(_ folderIDs: Set<UUID>) {
-        actionTask?.cancel()
-        actionTask = Task {
+        deleteFoldersTask?.cancel()
+        deleteFoldersTask = Task {
             do {
                 try await folderOperations.deleteFolders(folderIDs)
             } catch {
@@ -277,8 +289,8 @@ struct LibraryView: View {
     }
 
     private func mergeFolder(_ source: Folder, into destination: Folder) {
-        actionTask?.cancel()
-        actionTask = Task {
+        mergeFolderTask?.cancel()
+        mergeFolderTask = Task {
             do {
                 try await folderOperations.mergeFolder(source, into: destination)
             } catch {
@@ -292,8 +304,8 @@ struct LibraryView: View {
         let foldersToDelete = offsets.compactMap { userFolders.indices.contains($0) ? userFolders[$0] : nil }
         let folderIDs = Set(foldersToDelete.map(\.id))
         guard !folderIDs.isEmpty else { return }
-        actionTask?.cancel()
-        actionTask = Task {
+        deleteFoldersTask?.cancel()
+        deleteFoldersTask = Task {
             do {
                 try await folderOperations.moveFolders(folderIDs, into: destinationFolder)
             } catch {

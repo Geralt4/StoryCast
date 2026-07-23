@@ -454,21 +454,21 @@ nonisolated enum StorageBackupManager {
     /// Cover art is small (~50KB) and critical for UX, so it's worth backing up
     /// - Returns: Number of cover art files backed up, or nil if operation failed
     static func backupCoverArt() -> Int? {
-        let coverArtURLs = [
-            documentsBackedDirectoryURL(named: "CoverArt"),
-            applicationSupportBackedDirectoryURL(named: "RemoteCoverArt")
+        let coverArtSources: [(directory: URL, backupPrefix: String)] = [
+            (documentsBackedDirectoryURL(named: "CoverArt"), "coverart_local_"),
+            (applicationSupportBackedDirectoryURL(named: "RemoteCoverArt"), "coverart_remote_")
         ]
         
         var backedUpCount = 0
         
-        for coverArtDir in coverArtURLs {
+        for (coverArtDir, backupPrefix) in coverArtSources {
             guard FileManager.default.fileExists(atPath: coverArtDir.path) else { continue }
             
             do {
                 let files = try FileManager.default.contentsOfDirectory(at: coverArtDir, includingPropertiesForKeys: nil)
                 
                 for file in files where file.pathExtension.lowercased() == "jpg" || file.pathExtension.lowercased() == "jpeg" || file.pathExtension.lowercased() == "png" {
-                    let backupFileName = "coverart_\(file.lastPathComponent)"
+                    let backupFileName = "\(backupPrefix)\(file.lastPathComponent)"
                     let destURL = backupDirectoryURL.appendingPathComponent(backupFileName)
                     
                     do {
@@ -501,9 +501,21 @@ nonisolated enum StorageBackupManager {
         let coverArtFiles = contents.filter { $0.lastPathComponent.hasPrefix("coverart_") }
         
         for backupFile in coverArtFiles {
-            // Determine the correct destination based on whether it's remote or local cover art
-            let fileName = String(backupFile.lastPathComponent.dropFirst("coverart_".count))
-            let isRemote = fileName.contains("_remote_") || backupFile.lastPathComponent.contains("_remote_")
+            let name = backupFile.lastPathComponent
+            let fileName: String
+            let isRemote: Bool
+            if name.hasPrefix("coverart_remote_") {
+                fileName = String(name.dropFirst("coverart_remote_".count))
+                isRemote = true
+            } else if name.hasPrefix("coverart_local_") {
+                fileName = String(name.dropFirst("coverart_local_".count))
+                isRemote = false
+            } else {
+                // Legacy backups used coverart_<fileName> and optionally encoded
+                // remote status in the bare file name via a "_remote_" token.
+                fileName = String(name.dropFirst("coverart_".count))
+                isRemote = fileName.contains("_remote_")
+            }
             
             let destDir: URL
             if isRemote {

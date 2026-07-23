@@ -1,8 +1,6 @@
 import Foundation
 import os
-#if os(iOS)
 import UIKit
-#endif
 
 /// In-memory cache for cover art images, keyed by the bare filename stored on
 /// `Book.coverArtFileName`. Reads are first satisfied from the `NSCache`, then
@@ -11,7 +9,6 @@ import UIKit
 actor CoverArtCache {
     static let shared = CoverArtCache()
 
-    #if os(iOS)
     private let cache = NSCache<NSString, UIImage>()
 
     private init() {
@@ -38,11 +35,4 @@ actor CoverArtCache {
         cache.setObject(image, forKey: fileName as NSString, cost: cost)
         return image
     }
-    #else
-    private init() {}
-
-    func image(for fileName: String, url: URL) async -> UIImage? {
-        nil
-    }
-    #endif
 }

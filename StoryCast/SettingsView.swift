@@ -187,27 +187,31 @@ struct SettingsView: View {
                         }
                     }
 
-                    Link(destination: URL(string: AppConstants.privacyPolicyURL)!) {
-                        HStack {
-                            Image(systemName: "shield.fill")
-                                .foregroundColor(.green)
-                            Text("Privacy Policy")
-                            Spacer()
-                            Image(systemName: "arrow.up.forward.app")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                    if let privacyURL = URL(string: AppConstants.privacyPolicyURL) {
+                        Link(destination: privacyURL) {
+                            HStack {
+                                Image(systemName: "shield.fill")
+                                    .foregroundColor(.green)
+                                Text("Privacy Policy")
+                                Spacer()
+                                Image(systemName: "arrow.up.forward.app")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
                     }
 
-                    Link(destination: URL(string: AppConstants.supportURL)!) {
-                        HStack {
-                            Image(systemName: "questionmark.circle.fill")
-                                .foregroundColor(.blue)
-                            Text("Support & FAQ")
-                            Spacer()
-                            Image(systemName: "arrow.up.forward.app")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                    if let supportURL = URL(string: AppConstants.supportURL) {
+                        Link(destination: supportURL) {
+                            HStack {
+                                Image(systemName: "questionmark.circle.fill")
+                                    .foregroundColor(.blue)
+                                Text("Support & FAQ")
+                                Spacer()
+                                Image(systemName: "arrow.up.forward.app")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
                     }
                 }
