@@ -106,6 +106,18 @@ struct ServerRemovalService {
         }
 
         do {
+            let books = try modelContext.fetch(FetchDescriptor<Book>(
+                predicate: #Predicate { $0.serverId == serverID }
+            ))
+            let bookIds = Set(books.map(\.id))
+            RemoteLibraryService.shared.cancelCoverArtDownloads(for: bookIds)
+            await BackgroundRemoteCoverArtService.shared.cancelTasks(for: bookIds)
+            DownloadManager.shared.cancelDownloads(for: bookIds)
+        } catch {
+            AppLogger.network.warning("Failed to cancel in-flight tasks for removed server: \(error.localizedDescription, privacy: .private)")
+        }
+
+        do {
             try await persistFinalDeletion(serverID, container)
         } catch {
             throw RemovalError.persistenceFailed(underlying: error)

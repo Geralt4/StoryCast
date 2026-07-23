@@ -103,6 +103,12 @@ actor BackgroundRemoteCoverArtService {
             } catch is CancellationError {
                 return
             } catch {
+                if let apiError = error as? APIError, !apiError.isTransient {
+                    AppLogger.network.debug(
+                        "Background cover art non-transient failure for \(request.itemId, privacy: .private): \(error.localizedDescription, privacy: .private)"
+                    )
+                    return
+                }
                 attempt += 1
                 guard attempt < maxAttempts else {
                     AppLogger.network.debug(
@@ -111,7 +117,9 @@ actor BackgroundRemoteCoverArtService {
                     return
                 }
 
-                let delay = pow(2.0, Double(attempt))
+                let baseDelay = pow(2.0, Double(attempt))
+                let jitter = Double.random(in: 0..<baseDelay / 2)
+                let delay = baseDelay + jitter
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }

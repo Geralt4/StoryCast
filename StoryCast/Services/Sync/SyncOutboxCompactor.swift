@@ -5,7 +5,13 @@ import SwiftData
 enum SyncOutboxCompactor {
     static func compact(in context: ModelContext) throws {
         let operations = try context.fetch(FetchDescriptor<SyncOutboxOperation>())
-        let referenced = try Set(operations.flatMap { try SyncOutboxDependencyCodec.decode($0.dependencyData) })
+        let referenced = Set(operations.flatMap { operation -> [UUID] in
+            do {
+                return try SyncOutboxDependencyCodec.decode(operation.dependencyData)
+            } catch {
+                return []
+            }
+        })
         let retentions = try context.fetch(FetchDescriptor<SyncAssetRetentionState>())
 
         for retention in retentions {

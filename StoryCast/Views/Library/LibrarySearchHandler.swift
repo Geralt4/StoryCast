@@ -93,7 +93,8 @@ final class LibrarySearchHandler {
             return cachedFilteredFolders
         }
         
-        return cachedFilteredFolders
+        let query = normalizedSearchText.lowercased()
+        return allFolders.filter { $0.name.lowercased().contains(query) }
     }
     
     /// Returns books filtered by current search.
@@ -107,7 +108,8 @@ final class LibrarySearchHandler {
             return cachedFilteredBooks
         }
         
-        return cachedFilteredBooks
+        let query = normalizedSearchText.lowercased()
+        return deduplicatedBooks(allBooks.filter { $0.matchesSearch(query: query) })
     }
 
     func onDisappear() {

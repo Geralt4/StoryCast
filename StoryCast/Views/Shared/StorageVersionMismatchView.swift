@@ -6,6 +6,7 @@ struct StorageVersionMismatchView: View {
     
     @State private var recoveryState: RecoveryState = .idle
     @State private var backupURL: URL?
+    @State private var showTechnicalDetails = false
     
     private enum RecoveryState {
         case idle
@@ -73,7 +74,7 @@ struct StorageVersionMismatchView: View {
         .padding(.horizontal, 32)
         .padding(.top)
         
-        DisclosureGroup("Technical Details", isExpanded: .constant(false)) {
+        DisclosureGroup("Technical Details", isExpanded: $showTechnicalDetails) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(technicalDetails)
                     .font(.caption)

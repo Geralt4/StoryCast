@@ -351,7 +351,11 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
                     $0.subjectID == record.recordID.recordName && $0.stateRaw == "sending"
                 }) {
                     if let kind = SyncEntityKind(rawValue: operation.subjectKindRaw) {
-                        try SyncRecordSystemFieldsStore.persist(record: record, kind: kind, in: context)
+                        do {
+                            try SyncRecordSystemFieldsStore.persist(record: record, kind: kind, in: context)
+                        } catch {
+                            AppLogger.sync.error("Failed to persist system fields for \(record.recordID.recordName, privacy: .private): \(error.localizedDescription, privacy: .private)")
+                        }
                     }
                     SyncOutboxProcessor.markSent(operation)
                     removeUploadMarker(recordName: record.recordID.recordName, in: context)
@@ -407,8 +411,8 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
                     recordSyncError(error.localizedDescription)
                 }
             }
-            try SyncOutboxCompactor.compact(in: context)
             try context.save()
+            try SyncOutboxCompactor.compact(in: context)
         } catch {
             recordSyncError(error.localizedDescription)
         }
@@ -532,8 +536,12 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
     }
 
     private func removeUploadMarker(recordName: String, in context: ModelContext) {
-        guard let markers = try? context.fetch(FetchDescriptor<SyncReplicaUploadMarker>()) else { return }
-        for marker in markers where marker.recordName == recordName { context.delete(marker) }
+        do {
+            let markers = try context.fetch(FetchDescriptor<SyncReplicaUploadMarker>())
+            for marker in markers where marker.recordName == recordName { context.delete(marker) }
+        } catch {
+            AppLogger.sync.error("Failed to fetch upload markers for \(recordName, privacy: .private): \(error.localizedDescription, privacy: .private)")
+        }
     }
 
     private func ensureRetentionState(for operation: SyncOutboxOperation, in context: ModelContext) {

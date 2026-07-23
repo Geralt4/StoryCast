@@ -66,15 +66,22 @@ struct SleepTimerView: View {
                     // End of Chapter Button — only show if book has chapters
                     if !book.chapters.isEmpty {
                         Button(action: {
-                            // Get current chapter end time
-                            if let currentBook = getCurrentBook(),
-                               let currentChapter = getCurrentChapter(for: currentBook) {
-                                HapticManager.notification(.success)
-                                sleepTimer.startForEndOfChapter(
-                                    currentTime: AudioPlayerService.shared.currentTime,
-                                    chapterEndTime: currentChapter.endTime
-                                )
+                            let currentBook = getCurrentBook()
+                            let currentTime = AudioPlayerService.shared.currentTime
+                            let sortedChapters = (currentBook ?? book).chapters.sorted { $0.startTime < $1.startTime }
+                            let targetEndTime: Double
+                            if let chapter = getCurrentChapter(for: currentBook ?? book) {
+                                targetEndTime = chapter.endTime
+                            } else if let lastChapter = sortedChapters.last {
+                                targetEndTime = lastChapter.endTime
+                            } else {
+                                return
                             }
+                            HapticManager.notification(.success)
+                            sleepTimer.startForEndOfChapter(
+                                currentTime: currentTime,
+                                chapterEndTime: targetEndTime
+                            )
                         }) {
                             Label("End of Current Chapter", systemImage: "book.closed")
                                 .frame(maxWidth: .infinity)

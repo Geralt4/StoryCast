@@ -369,20 +369,25 @@ actor StorageManager {
 
     private func normalizedCoverArtData(from data: Data) -> Data? {
         #if os(iOS)
-        guard UIImage(data: data) != nil else {
+        guard let image = UIImage(data: data) else {
             return nil
         }
 
-        if data.count >= 2, data[0] == 0xFF, data[1] == 0xD8 {
-            return data
+        let maxDimension = max(image.size.width * image.scale, image.size.height * image.scale)
+        let cap: CGFloat = 600
+        guard maxDimension > cap else {
+            if data.count >= 2, data[0] == 0xFF, data[1] == 0xD8 { return data }
+            return image.jpegData(compressionQuality: StorageDefaults.coverArtCompressionQuality)
         }
 
-        guard let image = UIImage(data: data),
-              let jpegData = image.jpegData(compressionQuality: StorageDefaults.coverArtCompressionQuality) else {
-            return nil
+        let renderer = UIGraphicsImageRenderer(size: CGSize(
+            width: image.size.width * cap / maxDimension,
+            height: image.size.height * cap / maxDimension
+        ))
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: renderer.format.bounds.size))
         }
-
-        return jpegData
+        return resized.jpegData(compressionQuality: StorageDefaults.coverArtCompressionQuality)
         #else
         return data
         #endif

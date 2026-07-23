@@ -12,6 +12,7 @@ class SleepTimerService: ObservableObject {
     @Published private(set) var isWaitingForPlaybackStart: Bool = false
     
     private var timer: Timer?
+    private var timerEndDate: Date?
     private var endOfChapterTime: Double?
     private var timerGeneration: Int = 0
     private var playbackStateCancellable: AnyCancellable?
@@ -34,6 +35,7 @@ class SleepTimerService: ObservableObject {
 
         totalTime = minutes * 60
         remainingTime = totalTime
+        timerEndDate = Date().addingTimeInterval(TimeInterval(totalTime))
         isActive = true
         endOfChapterTime = nil
         AccessibilityNotifications.announce("Sleep timer set for \(minutes) minutes")
@@ -100,6 +102,7 @@ class SleepTimerService: ObservableObject {
         timerGeneration += 1
         timer?.invalidate()
         timer = nil
+        timerEndDate = nil
         isActive = false
         isWaitingForPlaybackStart = false
         remainingTime = 0
@@ -162,7 +165,11 @@ class SleepTimerService: ObservableObject {
                     return
                 }
 
-                self.remainingTime = max(0, self.remainingTime - 1)
+                if let endDate = self.timerEndDate {
+                    self.remainingTime = max(0, Int(endDate.timeIntervalSinceNow))
+                } else {
+                    self.remainingTime = max(0, self.remainingTime - 1)
+                }
                 if self.remainingTime <= 0 {
                     self.timerFired()
                 }

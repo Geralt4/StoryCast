@@ -607,10 +607,10 @@ final class PlayerViewModel {
             return lastChapter
         }
 
-        // Fall back to the first chapter if time is before any chapter starts
-        // (e.g. the very beginning of a book whose first chapter doesn't
-        // start at 0). Without this, no chapter is shown until the user
-        // crosses into the first chapter.
+        // Fall back to the closest-preceding chapter (or first if before all chapters)
+        if high >= 0, high < sortedChapters.count {
+            return sortedChapters[high]
+        }
         return sortedChapters.first
     }
     
