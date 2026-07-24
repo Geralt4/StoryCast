@@ -27,7 +27,14 @@ actor SyncDeviceIdentity {
             return existing
         }
 
-        let identifier = UUID().uuidString.lowercased()
+        let identifier: String
+        var bytes = [UInt8](repeating: 0, count: 16)
+        if SecRandomCopyBytes(kSecRandomDefault, 16, &bytes) == errSecSuccess {
+            let nsUUID = NSUUID(uuidBytes: bytes)
+            identifier = nsUUID.uuidString.lowercased()
+        } else {
+            identifier = UUID().uuidString.lowercased()
+        }
         guard let data = identifier.data(using: .utf8) else {
             throw SyncDeviceIdentityError.keychain(errSecParam)
         }

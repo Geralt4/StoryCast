@@ -225,10 +225,18 @@ private extension URL {
 
 extension DownloadManager: URLSessionDownloadDelegate {
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        if let response = downloadTask.response as? HTTPURLResponse, !(200...299).contains(response.statusCode) {
-            let error = APIError.httpError(statusCode: response.statusCode)
-            Task { @MainActor [weak self] in self?.handleDownloadError(downloadTask: downloadTask, error: error) }
-            return
+        if let response = downloadTask.response as? HTTPURLResponse {
+            guard (200...299).contains(response.statusCode) else {
+                let error = APIError.httpError(statusCode: response.statusCode)
+                Task { @MainActor [weak self] in self?.handleDownloadError(downloadTask: downloadTask, error: error) }
+                return
+            }
+            if let contentType = response.value(forHTTPHeaderField: "Content-Type")?.lowercased(),
+               !contentType.hasPrefix("audio/") && !contentType.hasPrefix("application/octet-stream") && !contentType.hasPrefix("video/") {
+                AppLogger.sync.warning("Rejecting download with unexpected Content-Type: \(contentType, privacy: .private)")
+                Task { @MainActor [weak self] in self?.handleDownloadError(downloadTask: downloadTask, error: APIError.invalidResponse) }
+                return
+            }
         }
 
         let tempDest = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -247,6 +255,11 @@ extension DownloadManager: URLSessionDownloadDelegate {
     }
 
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        let maxDownloadSize: Int64 = 2_000_000_000
+        if totalBytesWritten > maxDownloadSize {
+            downloadTask.cancel()
+            return
+        }
         guard totalBytesExpectedToWrite > 0 else { return }
         let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
         Task { @MainActor [weak self] in

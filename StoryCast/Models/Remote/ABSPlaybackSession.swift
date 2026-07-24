@@ -14,14 +14,7 @@ nonisolated struct ABSPlayRequest: Encodable {
 
     static func makeDefault() async -> ABSPlayRequest {
         await MainActor.run {
-            let deviceId: String
-            if let existingId = UserDefaults.standard.string(forKey: "StoryCast.DeviceID") {
-                deviceId = existingId
-            } else {
-                let newId = UUID().uuidString
-                UserDefaults.standard.set(newId, forKey: "StoryCast.DeviceID")
-                deviceId = newId
-            }
+            let deviceId = AudiobookshelfAuth.absDeviceID()
             
             let deviceModel = UIDevice.current.model
             

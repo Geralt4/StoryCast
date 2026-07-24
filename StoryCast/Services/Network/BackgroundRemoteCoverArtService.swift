@@ -67,7 +67,7 @@ actor BackgroundRemoteCoverArtService {
 
     func enqueue(requests: [RemoteCoverArtRequest], container: ModelContainer) {
         for request in requests {
-            guard tasks[request.bookId] == nil else { continue }
+            guard tasks[request.bookId] == nil, tasks.count < 4 else { continue }
 
             tasks[request.bookId] = Task(priority: .utility) {
                 await self.process(request: request, container: container)

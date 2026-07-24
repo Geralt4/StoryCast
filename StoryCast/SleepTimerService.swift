@@ -80,6 +80,9 @@ class SleepTimerService: ObservableObject {
             let duration = minutes * 60
             totalTime = duration
             remainingTime = duration
+            timerEndDate = audioPlayerService.isPlaying
+                ? Date().addingTimeInterval(TimeInterval(duration))
+                : nil
 
             if audioPlayerService.isPlaying {
                 isWaitingForPlaybackStart = false
@@ -90,6 +93,12 @@ class SleepTimerService: ObservableObject {
         } else {
             remainingTime += minutes * 60
             totalTime += minutes * 60
+            let extraSeconds = TimeInterval(minutes * 60)
+            if let existingEndDate = timerEndDate {
+                timerEndDate = existingEndDate.addingTimeInterval(extraSeconds)
+            } else {
+                timerEndDate = Date().addingTimeInterval(TimeInterval(remainingTime))
+            }
             if !audioPlayerService.isPlaying {
                 isWaitingForPlaybackStart = true
             }
@@ -143,10 +152,17 @@ class SleepTimerService: ObservableObject {
             }
 
             if timer == nil {
+                if timerEndDate == nil && remainingTime > 0 {
+                    timerEndDate = Date().addingTimeInterval(TimeInterval(remainingTime))
+                }
                 isWaitingForPlaybackStart = false
                 startTimedCountdown(for: timerGeneration)
             }
         } else {
+            if let endDate = timerEndDate {
+                remainingTime = max(0, Int(endDate.timeIntervalSinceNow))
+                timerEndDate = nil
+            }
             timer?.invalidate()
             timer = nil
             if remainingTime > 0 {

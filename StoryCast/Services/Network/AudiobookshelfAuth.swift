@@ -103,4 +103,61 @@ actor AudiobookshelfAuth {
         // Normalise the URL so trailing slashes don't create duplicate entries.
         return serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
+
+    // MARK: - Device Identity
+
+    private static let deviceIDService = "StoryCast.ABSDeviceID"
+    private static let deviceIDAccount = "deviceID"
+
+    /// Returns the persistent ABS device ID, migrating from UserDefaults if needed.
+    static func absDeviceID() -> String {
+        // Check Keychain first
+        let readQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: deviceIDService,
+            kSecAttrAccount as String: deviceIDAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: AnyObject?
+        if SecItemCopyMatching(readQuery as CFDictionary, &result) == errSecSuccess,
+           let data = result as? Data,
+           let id = String(data: data, encoding: .utf8), !id.isEmpty {
+            return id
+        }
+
+        // Migrate from UserDefaults if present
+        if let existing = UserDefaults.standard.string(forKey: "StoryCast.DeviceID"), !existing.isEmpty {
+            saveABSDeviceID(existing)
+            UserDefaults.standard.removeObject(forKey: "StoryCast.DeviceID")
+            return existing
+        }
+
+        // Generate new ID
+        let newID = UUID().uuidString
+        saveABSDeviceID(newID)
+        return newID
+    }
+
+    private static func saveABSDeviceID(_ id: String) {
+        guard let data = id.data(using: .utf8) else { return }
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: deviceIDService,
+            kSecAttrAccount as String: deviceIDAccount,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        SecItemDelete(addQuery as CFDictionary)
+        SecItemAdd(addQuery as CFDictionary, nil)
+    }
+
+    /// Deletes the ABS device ID from Keychain.
+    static func deleteABSDeviceID() {
+        SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: deviceIDService,
+            kSecAttrAccount as String: deviceIDAccount
+        ] as CFDictionary)
+    }
 }
