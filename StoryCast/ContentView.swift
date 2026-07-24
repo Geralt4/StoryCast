@@ -21,7 +21,7 @@ struct ContentView: View {
             case .unrecoverable(let error):
                 FatalErrorView(error: error, onReset: {
                     Task {
-                        await StorageManager.shared.resetAllData()
+                        await StorageManager.shared.resetAllData(container: modelContext.container)
                     }
                 })
             }

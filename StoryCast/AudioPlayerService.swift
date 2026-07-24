@@ -105,7 +105,7 @@ class AudioPlayerService: ObservableObject {
         let playerItem = AVPlayerItem(asset: asset)
         player = AVPlayer(playerItem: playerItem)
         player?.automaticallyWaitsToMinimizeStalling = true
-        player?.allowsExternalPlayback = true
+        player?.allowsExternalPlayback = url.isFileURL
         player?.volume = 1.0
         addPeriodicTimeObserver()
         observeTimeControlStatus()

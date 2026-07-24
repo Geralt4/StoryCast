@@ -161,7 +161,7 @@ final class PlaybackBackgroundManager {
         if backgroundTaskId == .invalid {
             AppLogger.playback.warning("Failed to start background task.")
         } else {
-            AppLogger.playback.info("beginBackgroundTaskIfNeeded: background task started with id \(self.backgroundTaskId.rawValue)")
+            AppLogger.playback.info("Background task started")
         }
     }
     

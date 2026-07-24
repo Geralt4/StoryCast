@@ -62,6 +62,7 @@ final class RemoteLibraryUICoverArtCoordinator {
         for request in requests {
             let bookId = request.bookId
             tasks[bookId]?.task.cancel()
+            guard tasks.count < 4 || tasks[bookId] != nil else { continue }
             let generation = allocateGeneration(for: bookId)
             let task = Task(priority: .utility) { [weak self] in
                 await self?.downloadAndSaveCoverArt(
@@ -185,6 +186,16 @@ final class RemoteLibraryUICoverArtCoordinator {
         } catch {
             if let apiError = error as? APIError, !apiError.isTransient {
                 AppLogger.network.debug("Cover art non-transient failure for \(request.itemId, privacy: .private): \(error.localizedDescription, privacy: .private)")
+                await MainActor.run {
+                    self.failures[compoundKey] = CoverArtFailure(
+                        bookId: request.bookId,
+                        serverId: request.serverId,
+                        itemId: request.itemId,
+                        error: error,
+                        timestamp: Date(),
+                        retryCount: CoverArtFailure.maxRetries
+                    )
+                }
                 return
             }
             AppLogger.network.debug("Cover art download failed for \(request.itemId, privacy: .private): \(error.localizedDescription, privacy: .private)")

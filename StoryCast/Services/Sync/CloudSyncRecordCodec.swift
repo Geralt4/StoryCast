@@ -191,6 +191,9 @@ nonisolated enum CloudSyncRecordCodec {
         guard let data = record[CloudSyncRecordField.payload] as? Data else {
             throw CloudSyncRecordCodecError.missingPayload(recordName: record.recordID.recordName)
         }
+        guard data.count <= 1_000_000 else {
+            throw CloudSyncRecordCodecError.invalidPayload(recordName: record.recordID.recordName, underlying: NSError(domain: "CloudSyncRecordCodec", code: -1, userInfo: [NSLocalizedDescriptionKey: "Payload exceeds 1 MB size limit"]))
+        }
         return data
     }
 

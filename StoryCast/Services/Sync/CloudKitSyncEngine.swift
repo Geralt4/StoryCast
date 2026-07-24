@@ -353,11 +353,15 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
                     if let kind = SyncEntityKind(rawValue: operation.subjectKindRaw) {
                         do {
                             try SyncRecordSystemFieldsStore.persist(record: record, kind: kind, in: context)
+                            SyncOutboxProcessor.markSent(operation)
                         } catch {
                             AppLogger.sync.error("Failed to persist system fields for \(record.recordID.recordName, privacy: .private): \(error.localizedDescription, privacy: .private)")
+                            SyncOutboxProcessor.markRetry(operation, message: "Persist failed: \(error.localizedDescription)", retryAfter: Date())
+                            continue
                         }
+                    } else {
+                        SyncOutboxProcessor.markSent(operation)
                     }
-                    SyncOutboxProcessor.markSent(operation)
                     removeUploadMarker(recordName: record.recordID.recordName, in: context)
                     if operation.subjectKindRaw == SyncEntityKind.generation.rawValue,
                        let payloadData = operation.payloadData,

@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import os
 import SwiftData
 #if os(iOS)
@@ -380,10 +381,12 @@ actor StorageManager {
             return image.jpegData(compressionQuality: StorageDefaults.coverArtCompressionQuality)
         }
 
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
         let renderer = UIGraphicsImageRenderer(size: CGSize(
             width: image.size.width * cap / maxDimension,
             height: image.size.height * cap / maxDimension
-        ))
+        ), format: format)
         let resized = renderer.image { _ in
             image.draw(in: CGRect(origin: .zero, size: renderer.format.bounds.size))
         }
@@ -520,9 +523,37 @@ actor StorageManager {
     }
     #endif
 
-    func resetAllData() {
+    func resetAllData(container: ModelContainer? = nil) {
         let fileManager = FileManager.default
         var failedDeletions: [String] = []
+        
+        // Clear Keychain tokens before deleting the database
+        if let container {
+            let context = ModelContext(container)
+            if let servers = try? context.fetch(FetchDescriptor<ABSServer>()) {
+                for server in servers {
+                    let key = server.normalizedURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    let query: [String: Any] = [
+                        kSecClass as String: kSecClassGenericPassword,
+                        kSecAttrService as String: "StoryCast.AudiobookshelfToken",
+                        kSecAttrAccount as String: key
+                    ]
+                    SecItemDelete(query as CFDictionary)
+                }
+            }
+        }
+        // Delete ABS device ID
+        SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "StoryCast.ABSDeviceID",
+            kSecAttrAccount as String: "deviceID"
+        ] as CFDictionary)
+        // Delete sync device identity
+        SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "StoryCast.SyncDeviceIdentity",
+            kSecAttrAccount as String: "current"
+        ] as CFDictionary)
         
         for directory in ManagedDirectory.allCases {
             let url = directoryURL(for: directory)
