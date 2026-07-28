@@ -2,6 +2,8 @@
 .aider*
 opencode.json
 .kilo/
+.hermes/
+.opencode/
 AGENTS.md
 
 # Build artifacts
