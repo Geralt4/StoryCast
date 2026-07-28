@@ -162,7 +162,8 @@ class AudioPlayerService: ObservableObject {
     }
     
     func togglePlayPause() {
-        if isPlaying { pause() } else { play() }
+        guard let player else { play(); return }
+        if player.timeControlStatus != .paused { pause() } else { play() }
     }
     
     func seek(to time: Double) {
@@ -409,7 +410,7 @@ extension AudioPlayerService: RemoteCommandDelegate {
     
     nonisolated func remoteCommandTogglePlayPause(isPlaying: Bool) {
         Task { @MainActor in
-            if isPlaying { self.pause() } else { self.play() }
+            self.togglePlayPause()
         }
     }
     

@@ -5,7 +5,6 @@ struct SleepTimerView: View {
     @Environment(\.dismiss) var dismiss
     @ObservedObject private var sleepTimer = SleepTimerService.shared
     
-    // ADD: Accept book as parameter
     let book: Book
     
     var body: some View {
