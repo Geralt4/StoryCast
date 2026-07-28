@@ -157,7 +157,13 @@ struct PlayerView: View {
 
 #Preview {
     let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
-    let container = try! ModelContainer(for: Book.self, Chapter.self, Folder.self, configurations: config)
+    let container: ModelContainer = {
+        do {
+            return try ModelContainer(for: Book.self, Chapter.self, Folder.self, configurations: config)
+        } catch {
+            fatalError("Preview setup failed: \(error)")
+        }
+    }()
     let book = Book(
         title: "Sample Book",
         localFileName: "sample.mp3",

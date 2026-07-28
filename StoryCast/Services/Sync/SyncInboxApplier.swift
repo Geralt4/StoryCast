@@ -185,7 +185,7 @@ enum SyncInboxApplier {
             inboxes = try context.fetch(FetchDescriptor<SyncInboxRecord>())
             retries = try context.fetch(FetchDescriptor<SyncInboxRetryState>())
         } catch {
-            AppLogger.sync.error("Failed to fetch inbox/retry states in retryableUnstagedAssetRecordNames: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch inbox/retry states in retryableUnstagedAssetRecordNames: \(error.localizedDescription, privacy: .private)")
             return []
         }
         let retriesByRecordName = Dictionary(uniqueKeysWithValues: retries.map { ($0.recordName, $0) })
@@ -622,7 +622,7 @@ enum SyncInboxApplier {
         do {
             records = try context.fetch(FetchDescriptor<SyncInboxRecord>())
         } catch {
-            AppLogger.sync.error("Failed to fetch SyncInboxRecord in upsertInbox: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch SyncInboxRecord in upsertInbox: \(error.localizedDescription, privacy: .private)")
             records = []
         }
         if let existing = records.first(where: { $0.id == id }) {
@@ -742,7 +742,7 @@ enum SyncInboxApplier {
         do {
             books = try context.fetch(FetchDescriptor<Book>())
         } catch {
-            AppLogger.sync.error("Failed to fetch books in updateBookAssetReferences: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch books in updateBookAssetReferences: \(error.localizedDescription, privacy: .private)")
             return
         }
         for book in books where book.id == payload.bookID && !book.isRemote {
@@ -822,7 +822,7 @@ enum SyncInboxApplier {
         do {
             assets = try context.fetch(FetchDescriptor<SyncAsset>())
         } catch {
-            AppLogger.sync.error("Failed to fetch assets in upsertAsset: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch assets in upsertAsset: \(error.localizedDescription, privacy: .private)")
             return
         }
         let asset = assets.first(where: { $0.id == payload.assetID }) ?? {
@@ -871,7 +871,7 @@ enum SyncInboxApplier {
         do {
             states = try context.fetch(FetchDescriptor<SyncEntityState>())
         } catch {
-            AppLogger.sync.error("Failed to fetch entity states in shouldApply: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch entity states in shouldApply: \(error.localizedDescription, privacy: .private)")
             return false
         }
         if let state = states.first(where: { $0.id == id }) {
@@ -918,7 +918,7 @@ enum SyncInboxApplier {
         do {
             states = try context.fetch(FetchDescriptor<SyncEntityState>())
         } catch {
-            AppLogger.sync.error("Failed to fetch entity states in isStale: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch entity states in isStale: \(error.localizedDescription, privacy: .private)")
             return false
         }
         guard let state = states.first(where: { $0.id == id }) else { return false }
@@ -940,7 +940,7 @@ enum SyncInboxApplier {
         do {
             assets = try context.fetch(FetchDescriptor<SyncAsset>())
         } catch {
-            AppLogger.sync.error("Failed to fetch assets in shouldInstallAsset: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch assets in shouldInstallAsset: \(error.localizedDescription, privacy: .private)")
             return true
         }
         guard let local = assets.first(where: { $0.id == payload.assetID }) else { return true }
@@ -991,7 +991,7 @@ enum SyncInboxApplier {
         do {
             markers = try context.fetch(FetchDescriptor<SyncReplicaUploadMarker>())
         } catch {
-            AppLogger.sync.error("Failed to fetch upload markers in markForUpload: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch upload markers in markForUpload: \(error.localizedDescription, privacy: .private)")
             return
         }
         guard !markers.contains(where: { $0.id == id }) else { return }
@@ -1003,7 +1003,7 @@ enum SyncInboxApplier {
         do {
             markers = try context.fetch(FetchDescriptor<SyncReplicaUploadMarker>())
         } catch {
-            AppLogger.sync.error("Failed to fetch upload markers in removeUploadMarker: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch upload markers in removeUploadMarker: \(error.localizedDescription, privacy: .private)")
             return
         }
         for marker in markers where marker.id == id { context.delete(marker) }
@@ -1019,7 +1019,7 @@ enum SyncInboxApplier {
         do {
             tombstones = try context.fetch(FetchDescriptor<SyncTombstone>())
         } catch {
-            AppLogger.sync.error("Failed to fetch tombstones in isTombstoned: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch tombstones in isTombstoned: \(error.localizedDescription, privacy: .private)")
             return false
         }
         return tombstones.contains {
@@ -1053,7 +1053,7 @@ enum SyncInboxApplier {
         do {
             tombstones = try context.fetch(FetchDescriptor<SyncTombstone>())
         } catch {
-            AppLogger.sync.error("Failed to fetch tombstones in upsertTombstone: \(error.localizedDescription)")
+            AppLogger.sync.error("Failed to fetch tombstones in upsertTombstone: \(error.localizedDescription, privacy: .private)")
             return
         }
         if let existing = tombstones.first(where: { $0.id == id }) {

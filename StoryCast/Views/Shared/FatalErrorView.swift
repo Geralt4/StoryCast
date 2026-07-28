@@ -11,9 +11,7 @@ struct FatalErrorView: View {
     @State private var showMailComposer = false
     @State private var errorDetailsExpanded = false
     
-    private var supportEmail: String {
-        Bundle.main.object(forInfoDictionaryKey: "SupportEmail") as? String ?? AppConstants.supportEmail
-    }
+    private let supportEmail = AppConstants.supportEmail
     
     private var errorDescription: String {
         guard let error = error else {
@@ -62,7 +60,7 @@ struct FatalErrorView: View {
                         Text("All data has been reset.")
                             .font(.headline)
                         
-                        Text("The app will restart automatically in 10-30 minutes. Please force-close and reopen StoryCast if it doesn't restart.")
+                        Text("Please force-close and reopen StoryCast to continue.")
                             .font(.caption)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)

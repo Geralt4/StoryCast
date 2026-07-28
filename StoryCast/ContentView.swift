@@ -91,7 +91,11 @@ struct ContentView: View {
     let container = AppBootstrap.makeRecoveryContainer() ?? {
         let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let schema = Schema([Book.self, Chapter.self, Folder.self, ABSServer.self])
-        return try! ModelContainer(for: schema, configurations: [config])
+        do {
+            return try ModelContainer(for: schema, configurations: [config])
+        } catch {
+            fatalError("Preview setup failed: \(error)")
+        }
     }()
     ContentView(storageBootstrapState: .ready(container))
         .environmentObject(ImportService.shared)

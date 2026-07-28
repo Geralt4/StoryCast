@@ -172,7 +172,7 @@ struct StorageVersionMismatchView: View {
             }
             .buttonStyle(.borderedProminent)
             
-            Button(action: {}) {
+            Link(destination: URL(string: AppConstants.supportURL)!) {
                 Text("Contact Support")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)

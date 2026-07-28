@@ -46,6 +46,6 @@ struct SleepTimerSettings: Codable {
 /// Default values for sleep timer settings
 enum SleepTimerDefaults {
     static let defaultDurationMinutes: Int = 30
-    static let availableDurations: [Int] = [15, 30, 45, 60]
+    static let availableDurations: [Int] = [15, 30, 45, 60, 90, 120]
     static let extensionOptions: [Int] = [5, 10, 15]
 }
