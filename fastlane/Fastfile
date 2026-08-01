@@ -3,9 +3,6 @@ default_platform(:ios)
 platform :ios do
   desc "Build and upload to App Store Connect"
   lane :upload do
-    increment_build_number(
-      xcodeproj: "StoryCast.xcodeproj"
-    )
     build_app(
       project: "StoryCast.xcodeproj",
       scheme: "StoryCast",
@@ -28,9 +25,6 @@ platform :ios do
 
   desc "Build and upload to TestFlight"
   lane :beta do
-    increment_build_number(
-      xcodeproj: "StoryCast.xcodeproj"
-    )
     build_app(
       project: "StoryCast.xcodeproj",
       scheme: "StoryCast",
