@@ -1,0 +1,6 @@
+What's New in 1.4
+• iCloud Sync — optionally keep your imported books, cover art, folders, chapters, and playback progress in sync across your devices via your private iCloud database
+• New sleep timer durations (90 and 120 minutes)
+• More reliable play/pause state handling
+• Privacy & security hardening throughout
+• Numerous stability and sync reliability fixes
