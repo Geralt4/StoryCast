@@ -50,6 +50,7 @@ platform :ios do
       clean: true,
       output_directory: "./build",
       output_name: "StoryCast.ipa",
+      archive_path: "./build/StoryCast.xcarchive",
       xcargs: "-allowProvisioningUpdates",
       skip_package_pkg: true
     )
