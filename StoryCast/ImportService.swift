@@ -4,14 +4,6 @@ import Foundation
 import Combine
 import os
 
-struct ImportBatchResult: Sendable {
-    let importedCount: Int
-    let duplicateCount: Int
-    let failedCount: Int
-    let errors: [ImportError]
-    let skippedDuplicateFileNames: [String]
-}
-
 @MainActor
 final class ImportService: ObservableObject {
     static let shared = ImportService()

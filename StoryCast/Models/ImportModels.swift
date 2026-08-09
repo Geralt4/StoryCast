@@ -179,20 +179,6 @@ struct FailedImport: Identifiable {
 
 // MARK: - Import Error (UI Display)
 
-/// Simple error wrapper for UI display in the failed imports section.
-///
-/// Used to display import errors in the library view with proper identification.
-struct ImportDisplayError: Identifiable {
-    /// Unique identifier
-    let id = UUID()
-    
-    /// Name of the file that failed to import
-    let fileName: String
-    
-    /// The underlying error
-    let error: Error
-}
-
 struct ImportError: Identifiable {
     let id = UUID()
     let fileName: String
