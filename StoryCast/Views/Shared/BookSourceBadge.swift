@@ -44,28 +44,6 @@ struct SyncStatusIndicator: View {
     }
 }
 
-/// Overlay shown while a remote stream is buffering.
-struct BufferingIndicator: View {
-    var body: some View {
-        ZStack {
-            Color.black.opacity(ColorDefaults.overlayOpacity)
-                .ignoresSafeArea()
-            VStack(spacing: LayoutDefaults.mediumSpacing) {
-                ProgressView()
-                    .tint(.white)
-                    .scaleEffect(1.4)
-                Text("Buffering…")
-                    .font(.subheadline)
-                    .foregroundStyle(.white)
-            }
-            .padding(LayoutDefaults.contentPadding)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: LayoutDefaults.overlayCornerRadius))
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Buffering audio")
-    }
-}
-
 #Preview {
     VStack(spacing: 20) {
         BookSourceBadge()
@@ -73,7 +51,6 @@ struct BufferingIndicator: View {
         SyncStatusIndicator(status: .syncing)
         SyncStatusIndicator(status: .synced)
         SyncStatusIndicator(status: .error)
-        BufferingIndicator()
     }
     .padding()
 }

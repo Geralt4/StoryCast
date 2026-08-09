@@ -110,27 +110,3 @@ nonisolated struct ABSProgressUpdateRequest: Encodable {
     let currentTime: Double?
     let isFinished: Bool?
 }
-
-// MARK: - Local Progress Sync
-
-struct ABSSyncLocalProgressRequest: Encodable {
-    let localMediaProgress: [ABSLocalProgress]
-}
-
-struct ABSLocalProgress: Encodable {
-    let id: String
-    let libraryItemId: String
-    let episodeId: String?
-    let duration: Double
-    let progress: Double
-    let currentTime: Double
-    let isFinished: Bool
-    let lastUpdate: Double      // milliseconds epoch
-    let startedAt: Double?
-    let finishedAt: Double?
-}
-
-struct ABSSyncLocalProgressResponse: Decodable {
-    let numServerProgressUpdates: Int?
-    let localProgressUpdates: [ABSMediaProgress]?
-}
