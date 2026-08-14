@@ -10,14 +10,13 @@ Target: major release featuring iCloud / CloudKit sync.
 - **No `print()` / `NSLog()`** in production source — logging goes through `AppLogger` with `.private` privacy annotations.
 - **Privacy docs** (`docs/privacy.html`, effective July 18, 2026) already declare iCloud Sync and "Data Not Collected".
 - **Tests**: 26 test files (25 unit + 1 UI), including sync-specific coverage (`SyncFoundationTests`, `CloudSyncRecordCodecTests`, `GroupBSyncFixTests`, `GroupAConcurrencyFixTests`, `GroupDFinalFixTests`).
-- **Build tooling**: fastlane removed; direct `xcodebuild archive` + `-exportArchive` workflow with committed `ExportOptions.plist` (method `app-store`, team `ZY5G2U9YN3`, automatic signing).
+- **Build tooling**: fastlane removed; direct `xcodebuild archive` + `-exportArchive` workflow with committed `ExportOptions.plist` (method `app-store-connect`, team `ZY5G2U9YN3`, automatic signing).
 - **Version alignment**: all 6 configs at `MARKETING_VERSION = 1.4`, `CURRENT_PROJECT_VERSION = 12`.
 - **Release notes** preserved at `release_notes/v1.4.txt`.
 
 ### Blocker-level items
-1. **CloudKit Production schema deployment** — must be verified (Phase 4). Development-only schema breaks sync for App Store users.
-2. **Apple Distribution certificate** — only a Development identity is currently in the keychain; required for app-store archive export (Phase 5).
-3. **No verified build / test run** in this session yet.
+1. **CloudKit Production schema deployment** — must be verified (Phase 4). Development-only schema breaks sync for App Store users. ← **MANDATORY READINESS GATE**
+2. **CloudKit Dashboard confirmation** — user must visually confirm the 7 record types in Production (Phase 4 step 2); not verifiable from CLI.
 
 ### Minor (non-blocking)
 - `SyncLocalMutation` is a registered SwiftData model with no apparent read/write references — possibly vestigial. Harmless; clean up later if desired.
@@ -54,14 +53,29 @@ All 6 configs aligned to 1.4 (`9536272`), build bumped to 12 (`0d9056b`), fastla
    - **Note:** custom zone `StoryCastLibraryV1` is created at runtime by the first Production client via `CKSyncEngine`; it will not appear in the Dashboard until the first App Store user syncs. This is expected — verify record types and indexes only.
 3. Confirm the App Store distribution provisioning profile includes the iCloud container `iCloud.IoannisManologlou.StoryCast`.
 
+**Success Criteria (MANDATORY READINESS GATE):**
+- All 7 record types confirmed deployed in CloudKit Dashboard → Production environment → Private Database.
+- Provisioning profile includes the iCloud container `iCloud.IoannisManologlou.StoryCast`.
+
+**CRITICAL:** This is a go-live blocker. If record types are not in Production, every App Store user attempting to sync will encounter `CKError.unknownItem`. Submission to App Store Connect without Production schema deployment results in a broken sync experience for all users.
+
 **Failure handling:** If record types are missing in Production, deploy via CloudKit Dashboard "Deploy Schema Changes..." (Development → Production), then re-verify. If the provisioning profile lacks the container, regenerate it in the Apple Developer portal with iCloud capability enabled.
 
 ### Phase 5 — Archive Build Verification
 **Objective:** Build the shippable artifact (app-store archive) and verify code signing, entitlements, and provisioning.
 
 **Prerequisites:**
-1. **Apple Distribution certificate** installed in keychain (currently only a Development identity is present). Download from Apple Developer portal or create via Xcode → Preferences → Accounts → Manage Certificates. Verify: `security find-identity -v -p codesigning | grep Distribution`.
-2. **Xcode account authentication**: Apple ID `johnmanologlou@gmail.com` signed in via Xcode → Preferences → Accounts with team `ZY5G2U9YN3` visible. The `-allowProvisioningUpdates` flag uses this session.
+
+**Xcode account authentication (required):**
+- Apple ID `johnmanologlou@gmail.com` must be signed in via Xcode → Preferences → Accounts with team `ZY5G2U9YN3` visible.
+- Xcode's **cloud-managed signing** (Xcode 14+) auto-provisions an "Apple Distribution" certificate during archive/export when an account is signed in.
+- The `-allowProvisioningUpdates` flag enables automatic profile downloads and certificate management.
+
+**Note on certificate management:**
+- With cloud-managed signing, no manual distribution certificate installation is required — Xcode creates and manages the identity automatically.
+- The local keychain may show only an "Apple Development" identity; this is expected — the distribution identity is cloud-managed and not stored locally.
+- **Local CLI probes are informational only**: `defaults read com.apple.dt.Xcode IDEProvisioningTeams` and keychain lookups may read negative even when cloud-managed signing works. The archive/export attempt itself is the authoritative signing check — do not gate on probe results.
+- Fallback: if cloud-managed signing is unavailable (e.g., older Xcode, team restrictions), manually download an "Apple Distribution" certificate from the Apple Developer portal and install via Keychain Access or Xcode → Preferences → Accounts → Manage Certificates.
 
 **Build steps:**
 ```bash
@@ -84,13 +98,18 @@ xcodebuild -exportArchive \
   -exportPath ./build
 ```
 
+**Expected signing behavior:**
+- The archive step may log a Development identity (`Apple Development: IOANNIS MANOLOGLOU`) during the build — this is expected with automatic signing.
+- The export step re-signs the app with the cloud-managed "Apple Distribution" certificate and store provisioning profile.
+- Verify the final IPA's distribution signing via `codesign -dvv` on the app bundle inside the archive (`build/StoryCast.xcarchive/Products/Applications/StoryCast.app`) or extracted from the IPA.
+
 **Verify:**
 - Exit code 0 on both commands; no code-signing errors or missing-entitlement warnings in the log.
 - Outputs: `./build/StoryCast.xcarchive` and `./build/StoryCast.ipa`.
 - (Optional) Xcode → Window → Organizer → select archive → "Validate App" (does not submit).
 
 **Failure handling:**
-- No Distribution certificate → install per Prerequisites, re-run.
+- No Xcode account session / cloud-managed signing fails → verify Apple ID is signed in via Xcode → Preferences → Accounts with team `ZY5G2U9YN3` visible. If cloud-managed signing is unavailable for your account/team, download and install an "Apple Distribution" certificate manually from the Apple Developer portal, then re-run.
 - Xcode account session expired → re-login in Xcode → Preferences → Accounts, re-run.
 - Provisioning profile missing iCloud container → verify Phase 4 step 3; download manual profiles in Xcode → Preferences → Accounts, re-run.
 - Build failure unrelated to signing → fix code, commit, re-run.
@@ -119,6 +138,14 @@ xcodebuild -exportArchive \
 - Confirm clean working tree (except this plan document).
 - Provide GO / NO-GO recommendation.
 - Do **not** tag, push, or submit in this flow — those are explicit steps that require a separate ask.
+
+**GO/NO-GO Verdict Criteria:**
+- Phase 4: CloudKit Production schema verified (user must confirm via Dashboard) ← **MANDATORY**
+- Phase 5: Archive build succeeded with valid App Store distribution signing ← verified
+- Phase 6: Full test suite passed with 0 failures ← verified
+- Working tree clean, no uncommitted changes ← verified
+
+A GO verdict is **conditional** on CloudKit Production schema confirmation (Phase 4). If the user has not verified the Dashboard, the verdict is "CONDITIONAL GO — pending Phase 4 user confirmation."
 
 ---
 
