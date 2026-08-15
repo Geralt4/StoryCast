@@ -1,0 +1,37 @@
+DEFINE SCHEMA
+RECORD TYPE SCLibraryGenerationV1 (
+    schemaVersion INT64,
+    payload BYTES,
+    updatedAt TIMESTAMP
+);
+RECORD TYPE SCBookV1 (
+    schemaVersion INT64,
+    payload BYTES,
+    updatedAt TIMESTAMP
+);
+RECORD TYPE SCFolderV1 (
+    schemaVersion INT64,
+    payload BYTES,
+    updatedAt TIMESTAMP
+);
+RECORD TYPE SCChapterV1 (
+    schemaVersion INT64,
+    payload BYTES,
+    updatedAt TIMESTAMP
+);
+RECORD TYPE SCProgressHeadV1 (
+    schemaVersion INT64,
+    payload BYTES,
+    updatedAt TIMESTAMP
+);
+RECORD TYPE SCTombstoneV1 (
+    schemaVersion INT64,
+    payload BYTES,
+    updatedAt TIMESTAMP
+);
+RECORD TYPE SCAssetV1 (
+    schemaVersion INT64,
+    payload BYTES,
+    updatedAt TIMESTAMP,
+    asset ASSET
+);
