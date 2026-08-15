@@ -43,6 +43,8 @@ All 6 configs aligned to 1.4 (`9536272`), build bumped to 12 (`0d9056b`), fastla
 ### Phase 4 — CloudKit Production Environment Verification
 **Objective:** Confirm the CloudKit schema (record types and indexes) is deployed to Production.
 
+> **STATUS (Aug 15, 2026): NOT DEPLOYED — both the Development and Production environments currently show only the built-in `Users` record type (user-confirmed in the CloudKit Console). The 7 `SC*V1` record types are absent from both. This is the mandatory go-live gate.** Deployment plan: `docs/cloudkit-production-deployment.md`. Source schema file: `cloudkit-schema.ckdb` (committed alongside this plan). Path: materialize via `xcrun cktool import-schema` into Development, then `Deploy Schema Changes…` from Development to Production.
+
 **Critical:** Development environment data does not carry to Production. If the schema exists only in Development, App Store users will encounter `CKError.unknownItem` on first sync attempt.
 
 **Steps:**
