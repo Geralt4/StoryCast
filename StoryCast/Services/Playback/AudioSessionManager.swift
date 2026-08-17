@@ -20,64 +20,87 @@ final class AudioSessionManager {
     weak var delegate: AudioSessionDelegate?
     #endif
     
-    var isAudioSessionActive = false
+    private(set) var isAudioSessionActive = false
     
     private var interruptionObserver: Any?
     private var routeChangeObserver: Any?
+    private var activationTask: Task<Void, Never>?
     
     private init() {}
     
     func setup() {
         #if os(iOS)
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio, policy: .longFormAudio)
-            try session.setActive(true)
-            isAudioSessionActive = true
-            AppLogger.playback.info("Audio session configured for background playback")
-        } catch {
-            AppLogger.playback.error("Failed to set up audio session: \(error.localizedDescription, privacy: .private)")
+        Task.detached(priority: .userInitiated) {
+            do {
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, policy: .longFormAudio)
+                AppLogger.playback.info("Audio session configured for background playback")
+            } catch {
+                AppLogger.playback.error("Failed to set up audio session: \(error.localizedDescription, privacy: .private)")
+            }
         }
         setupInterruptionObserver()
         setupRouteChangeObserver()
         #endif
     }
     
-    func ensureActive() {
+    func ensureActive() async throws {
         #if os(iOS)
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio, policy: .longFormAudio)
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-            isAudioSessionActive = true
-        } catch {
-            AppLogger.playback.error("Failed to activate audio session: \(error.localizedDescription, privacy: .private)")
-            Task { @MainActor in
-                await self.retryActivationWithBackoff()
+        if isAudioSessionActive {
+            return
+        }
+        if let activationTask {
+            await activationTask.value
+            guard isAudioSessionActive else {
+                throw AudioSessionActivationError.failed
             }
+            return
+        }
+
+        let task = Task { @MainActor in
+            do {
+                try await activateSession()
+                if !Task.isCancelled {
+                    isAudioSessionActive = true
+                    AppLogger.playback.info("Audio session activated")
+                }
+            } catch {
+                AppLogger.playback.error("Failed to activate audio session: \(error.localizedDescription, privacy: .private)")
+            }
+        }
+        activationTask = task
+        await task.value
+        activationTask = nil
+
+        guard isAudioSessionActive else {
+            throw AudioSessionActivationError.failed
         }
         #endif
     }
 
     #if os(iOS)
-    private func retryActivationWithBackoff() async {
-        let maxAttempts = 2
+    private func activateSession() async throws {
+        let maxAttempts = 3
         for attempt in 1...maxAttempts {
             do {
-                try await Task.sleep(nanoseconds: UInt64(attempt) * 100_000_000)
-                try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-                isAudioSessionActive = true
-                AppLogger.playback.info("Audio session reactivated on retry attempt \(attempt)")
+                try await performActivation()
                 return
             } catch {
-                AppLogger.playback.warning("Audio session reactivation attempt \(attempt) failed: \(error.localizedDescription, privacy: .private)")
+                AppLogger.playback.warning("Audio session activation attempt \(attempt) failed: \(error.localizedDescription, privacy: .private)")
+                if attempt < maxAttempts {
+                    try await Task.sleep(nanoseconds: UInt64(attempt) * 100_000_000)
+                }
             }
         }
-        AppLogger.playback.error("All audio session reactivation attempts failed")
+        throw AudioSessionActivationError.failed
     }
-    #endif
+
+    private func performActivation() async throws {
+        let options: AVAudioSession.SetActiveOptions = [.notifyOthersOnDeactivation]
+        try await Task.detached(priority: .userInitiated) {
+            try AVAudioSession.sharedInstance().setActive(true, options: options)
+        }.value
+    }
     
-    #if os(iOS)
     func handleInterruption(type: AVAudioSession.InterruptionType, options: AVAudioSession.InterruptionOptions) {
         switch type {
         case .began:
@@ -130,3 +153,13 @@ final class AudioSessionManager {
     }
     #endif
 }
+
+#if os(iOS)
+enum AudioSessionActivationError: LocalizedError {
+    case failed
+
+    var errorDescription: String? {
+        "Unable to activate the audio session."
+    }
+}
+#endif

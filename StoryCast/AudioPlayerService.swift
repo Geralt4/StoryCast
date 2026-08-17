@@ -30,6 +30,7 @@ class AudioPlayerService: ObservableObject {
     private var wasPlayingBeforeInterruption = false
     private var timeControlStatusObserver: NSKeyValueObservation?
     private var durationLoadTask: Task<Void, Never>?
+    private var pendingPlayTask: Task<Void, Never>?
     private var endOfPlaybackObserver: Any?
     private let preferredTimescale: CMTimeScale = 600
     
@@ -142,7 +143,23 @@ class AudioPlayerService: ObservableObject {
         backgroundManager.isPlaying = true
         remoteCommandHandler.isPlaying = true
         #endif
-        audioSessionManager.ensureActive()
+        pendingPlayTask?.cancel()
+        pendingPlayTask = Task { @MainActor in
+            do {
+                try await audioSessionManager.ensureActive()
+                guard !Task.isCancelled else { return }
+                startPlaybackNow()
+            } catch {
+                AppLogger.playback.error("Playback blocked: audio session activation failed: \(error.localizedDescription, privacy: .private)")
+                #if os(iOS)
+                self.backgroundManager.isPlaying = false
+                self.remoteCommandHandler.isPlaying = false
+                #endif
+            }
+        }
+    }
+    
+    private func startPlaybackNow() {
         player?.playImmediately(atRate: playbackRate)
         updatePlaybackRate()
         playbackDidReachEnd = false
@@ -151,6 +168,8 @@ class AudioPlayerService: ObservableObject {
     
     func pause() {
         AppLogger.playback.info("pause() called - isPlaying: \(self.isPlaying)")
+        pendingPlayTask?.cancel()
+        pendingPlayTask = nil
         player?.pause()
         isPlaying = false
         #if os(iOS)
@@ -330,7 +349,9 @@ class AudioPlayerService: ObservableObject {
             return
         }
         backgroundManager.isPlaying = true
-        audioSessionManager.ensureActive()
+        Task { @MainActor in
+            try? await audioSessionManager.ensureActive()
+        }
         updatePlaybackRate()
         #endif
     }
@@ -338,7 +359,9 @@ class AudioPlayerService: ObservableObject {
     private func ensureForegroundPlayback() {
         #if os(iOS)
         guard isPlaying else { return }
-        audioSessionManager.ensureActive()
+        Task { @MainActor in
+            try? await audioSessionManager.ensureActive()
+        }
         updatePlaybackRate()
         #endif
     }
@@ -372,20 +395,12 @@ extension AudioPlayerService: AudioSessionDelegate {
 
     @MainActor
     private func attemptPlaybackResumptionWithRetry() async {
-        let maxAttempts = 2
-        for attempt in 1...maxAttempts {
-            do {
-                try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-                self.play()
-                return
-            } catch {
-                AppLogger.playback.warning("Playback resumption attempt \(attempt) failed: \(error.localizedDescription, privacy: .private)")
-                if attempt < maxAttempts {
-                    try? await Task.sleep(nanoseconds: UInt64(attempt) * 100_000_000)
-                }
-            }
+        do {
+            try await audioSessionManager.ensureActive()
+            self.play()
+        } catch {
+            AppLogger.playback.error("Playback resumption failed — user may need to manually resume: \(error.localizedDescription, privacy: .private)")
         }
-        AppLogger.playback.error("All playback resumption attempts failed — user may need to manually resume")
     }
     
     nonisolated func audioSessionRouteChanged(reason: AVAudioSession.RouteChangeReason) {

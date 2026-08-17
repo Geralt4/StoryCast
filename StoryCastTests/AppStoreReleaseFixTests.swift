@@ -62,9 +62,9 @@ nonisolated final class AppStoreReleaseFixTests: XCTestCase {
     // MARK: - H4: Audio session retry logic exists
 
     @MainActor
-    func testAudioSessionManagerEnsureActiveDoesNotCrash() throws {
+    func testAudioSessionManagerEnsureActiveDoesNotCrash() async throws {
         let manager = AudioSessionManager.shared
-        manager.ensureActive()
+        try await manager.ensureActive()
         XCTAssertTrue(true, "ensureActive should not throw")
     }
 }
