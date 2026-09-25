@@ -48,6 +48,8 @@ class AudioPlayerService: ObservableObject {
     private(set) var currentURL: URL?
     private(set) var currentBookID: UUID?
     private(set) var currentSource: PlaybackSource?
+    /// True from a seek request until the player has landed on the target.
+    var isSeekPending: Bool { pendingSeek != nil }
 
     private struct PendingSeek {
         let generation: Int
@@ -475,10 +477,12 @@ class AudioPlayerService: ObservableObject {
         let lastPlayable = source.timeline.segments.indices.last { source.timeline.segments[$0].duration > 0 }
         if item.trackIndex == lastPlayable {
             publishTime(source.timeline.duration)
+            // Flag the end before dropping the play intent, so observers of the
+            // pause already know it was the end of the book.
+            playbackDidReachEnd = true
             isAudioSessionReadyForPlay = false
             setPlayIntent(false)
             updatePlaybackRate()
-            playbackDidReachEnd = true
             AppLogger.playback.info("Playback reached end of book")
             return
         }
