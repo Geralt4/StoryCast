@@ -28,7 +28,18 @@ final class LibraryBookActions {
         }
     }
 
+    /// Stops anything still using a book's files before they are deleted.
+    private func stopUsing(_ books: [Book]) {
+        let ids = Set(books.map(\.id))
+        DownloadManager.shared.cancelDownloads(for: ids)
+        let player = AudioPlayerService.shared
+        if let playingID = player.currentBookID, ids.contains(playingID) {
+            player.unload()
+        }
+    }
+
     func deleteBook(_ book: Book) async throws {
+        stopUsing([book])
         let containsLocalBook = !book.isRemote
         let deviceID = containsLocalBook ? try? await SyncDeviceIdentity.shared.identifier() : nil
         let context = modelContext
@@ -52,6 +63,7 @@ final class LibraryBookActions {
 
     func deleteBooks(_ books: [Book]) async throws {
         guard !books.isEmpty else { return }
+        stopUsing(books)
 
         let containsLocalBook = books.contains { !$0.isRemote }
         let deviceID = containsLocalBook ? try? await SyncDeviceIdentity.shared.identifier() : nil

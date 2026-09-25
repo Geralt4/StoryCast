@@ -18,6 +18,7 @@ struct StoryCastApp: App {
         case .ready(let container):
             storageBootstrapState = .ready(container)
             sharedModelContainer = container
+            DownloadManager.shared.configure(container: container)
         case .failed(let failure):
             if let recoveryContainer = AppBootstrap.makeRecoveryContainer() {
                 storageBootstrapState = .failed(failure)

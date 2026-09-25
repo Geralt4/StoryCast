@@ -30,6 +30,13 @@ nonisolated struct ABSUserResponse: Decodable {
     let username: String
     let token: String
     let type: String?
+    let permissions: ABSUserPermissions?
+}
+
+nonisolated struct ABSUserPermissions: Decodable {
+    /// Whether the account may download books; the per-file endpoint the app
+    /// downloads from doesn't enforce this itself.
+    let download: Bool?
 }
 
 nonisolated struct ABSServerStatus: Decodable {
