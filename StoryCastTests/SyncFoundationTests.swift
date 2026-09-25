@@ -1176,63 +1176,39 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertEqual(try verification.fetch(FetchDescriptor<SyncTombstone>()).count, 1)
     }
 
-    func testInboxRejectsGenerationFromADifferentStoryCastLibrary() async throws {
+    func testInboxAdoptsGenerationWrittenByAnotherDevice() async throws {
+        // Every device mints its own generation on first plan, and the zone holds
+        // a single generation record, so a second device enabling sync always
+        // fetches a generation that differs from its local one. It must adopt it
+        // rather than reject it, or sync never works on more than one device.
         let container = try makeContainer()
-        let boundID = UUID()
-        let foreignID = UUID()
+        let localID = UUID()
+        let remoteID = UUID()
         let zoneID = CKRecordZone.ID(zoneName: "StoryCastLibraryV1")
 
-        // A device already bound to its own StoryCast generation.
-        let bootstrapContext = ModelContext(container)
-        try await SyncInboxApplier.stage(
-            record: try CloudSyncRecordCodec.makeRecord(
-                type: .generation,
-                recordName: SyncRecordName.generation(),
-                zoneID: zoneID,
-                payload: CloudSyncGenerationPayload(
-                    generationID: boundID,
-                    schemaVersion: CloudSyncRecordCodec.schemaVersion,
-                    createdAt: Date(timeIntervalSince1970: 1_000)
-                )
-            ),
-            container: container
-        )
-        XCTAssertEqual(try SyncAccountCoordinator.binding(in: bootstrapContext).boundGenerationID,
-                       boundID.uuidString.lowercased())
-
-        // The same zone is later fetched under a different generation.
-        do {
+        for (generationID, createdAt) in [(localID, 1_000.0), (remoteID, 2_000.0)] {
             try await SyncInboxApplier.stage(
                 record: try CloudSyncRecordCodec.makeRecord(
                     type: .generation,
                     recordName: SyncRecordName.generation(),
                     zoneID: zoneID,
                     payload: CloudSyncGenerationPayload(
-                        generationID: foreignID,
+                        generationID: generationID,
                         schemaVersion: CloudSyncRecordCodec.schemaVersion,
-                        createdAt: Date(timeIntervalSince1970: 2_000)
+                        createdAt: Date(timeIntervalSince1970: createdAt)
                     )
                 ),
                 container: container
             )
-            XCTFail("Expected a foreign generation record to be rejected.")
-        } catch let error as SyncInboxError {
-            guard case .generationMismatch(let local, let remote) = error else {
-                return XCTFail("Expected generationMismatch, got \(error)")
-            }
-            XCTAssertEqual(local, boundID.uuidString.lowercased())
-            XCTAssertEqual(remote, foreignID.uuidString.lowercased())
         }
 
         try await SyncInboxApplier.drain(container: container)
         let verification = ModelContext(container)
         XCTAssertEqual(try SyncAccountCoordinator.binding(in: verification).boundGenerationID,
-                       boundID.uuidString.lowercased(),
-                       "A rejected foreign generation must not rebrand the device.")
+                       remoteID.uuidString.lowercased())
         XCTAssertEqual(try SyncRuntimeStore.runtime(in: verification).generationID,
-                       boundID.uuidString.lowercased())
-        XCTAssertTrue(try verification.fetch(FetchDescriptor<SyncInboxRecord>()).allSatisfy { $0.stateRaw != "pending" },
-                      "The rejected record must not block every future drain pass.")
+                       remoteID.uuidString.lowercased())
+        XCTAssertTrue(try verification.fetch(FetchDescriptor<SyncInboxRecord>()).allSatisfy { $0.stateRaw != "pending" })
     }
 
     private func makeContainer() throws -> ModelContainer {
