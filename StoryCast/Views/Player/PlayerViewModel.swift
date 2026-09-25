@@ -38,6 +38,9 @@ final class PlayerViewModel {
     private var debouncedSaveTask: Task<Void, Never>?
     private var periodicSaveTimer: Timer?
     private var lastSavedPosition: Double = -1.0
+    /// The book's saved position when this view model last loaded it; a source
+    /// that may hold only part of the book never saves an end position below it.
+    private var positionAtLoad: Double = 0
 
     // MARK: - Singleton References
 
@@ -72,6 +75,11 @@ final class PlayerViewModel {
     // MARK: - Computed Properties
 
     var safeDuration: Double {
+        // While this book is loaded, the player's timeline is the length that
+        // can actually be played and sought.
+        if audioPlayer.currentBookID == book.id, audioPlayer.duration.isFinite, audioPlayer.duration > 0 {
+            return audioPlayer.duration
+        }
         guard book.duration.isFinite, book.duration > 0 else {
             return 0
         }
@@ -140,6 +148,12 @@ final class PlayerViewModel {
             if sleepTimer.isActive {
                 sleepTimer.cancel()
             }
+            // Stop the previous book right away rather than letting it keep
+            // playing (and reporting time) while this one opens.
+            if audioPlayer.isPlaying {
+                audioPlayer.pause()
+            }
+            positionAtLoad = book.lastPlaybackPosition
 
             // Cancel any previous remote playback task
             remotePlaybackTask?.cancel()
@@ -151,9 +165,10 @@ final class PlayerViewModel {
                 // a streaming session.
                 remotePlaybackTask = Task { @MainActor in
                     do {
-                        let stream = try await startRemotePlaybackSession()
+                        let start = try await startRemotePlaybackSession()
                         guard !Task.isCancelled else { return }
-                        audioPlayer.loadAuthenticatedAudio(stream: stream, title: book.title, duration: safeDuration, seekTo: book.lastPlaybackPosition)
+                        importServerChapters(start.chapters, source: start.source)
+                        audioPlayer.load(source: start.source, title: book.title, seekTo: start.resumePosition)
                     } catch APIError.noActiveServer {
                         showRemoteServerError = true
                         remoteServerErrorMessage = "Server not found. Please check your Audiobookshelf server configuration."
@@ -192,8 +207,10 @@ final class PlayerViewModel {
             audioPlayer.updateNowPlayingInfo(title: book.title, duration: safeDuration, currentTime: audioPlayer.currentTime, artwork: coverArtUIImage)
         }
 
-        // Lazy extract embedded chapters if none exist (for local and downloaded books)
-        if (!book.isRemote || book.isDownloaded) && book.chapters.isEmpty {
+        // Lazily extract embedded chapters when none exist. Only a single audio
+        // file holds all of a book's chapters: local books and single-file
+        // downloads. Streamed books get their chapters from the server.
+        if (!book.isRemote || isSingleFileDownload) && book.chapters.isEmpty {
             chapterExtractionTask?.cancel()
             chapterExtractionTask = Task { @MainActor in
                 guard !Task.isCancelled else { return }
@@ -265,7 +282,18 @@ final class PlayerViewModel {
         guard isCurrentPlaybackTarget() else { return }
         clearChapterPlaybackSession()
         audioPlayer.pause()
-        persistPlaybackPosition(book.duration, errorMessage: "Couldn't save completed playback position.", forceImmediate: true)
+        persistPlaybackPosition(endOfPlaybackPosition(), errorMessage: "Couldn't save completed playback position.", forceImmediate: true)
+    }
+
+    /// Where to save the position when playback reaches the end of the source.
+    /// A source covering the whole book marks it finished. One that may hold
+    /// only part of the book never moves the saved position backwards.
+    func endOfPlaybackPosition() -> Double {
+        let timelineEnd = audioPlayer.currentBookID == book.id ? audioPlayer.duration : 0
+        guard audioPlayer.currentSource?.coversWholeBook ?? true else {
+            return max(audioPlayer.currentTime, positionAtLoad)
+        }
+        return max(book.duration, timelineEnd)
     }
 
     func handlePlaybackStateChange(isPlaying: Bool) {
@@ -273,6 +301,9 @@ final class PlayerViewModel {
         if isPlaying {
             updateLastPlayedDate()
             AccessibilityNotifications.announce("Playing \(book.title)")
+        } else if audioPlayer.playbackDidReachEnd {
+            // handlePlaybackDidReachEnd already saved the end position.
+            AccessibilityNotifications.announce("Paused")
         } else {
             // Save immediately when pausing to prevent data loss on app close
             forceSavePlaybackPosition(audioPlayer.currentTime, errorMessage: "Couldn't save playback position.")
@@ -381,10 +412,16 @@ final class PlayerViewModel {
     }
 
     func isCurrentBookLoaded(expectedURL: URL? = nil) -> Bool {
+        if audioPlayer.currentBookID == book.id {
+            // A book that became available offline while streaming counts as
+            // not loaded, so the next open switches to the local files.
+            let hasLocalAudio = (expectedURL ?? bookAudioURL) != nil
+            return !hasLocalAudio || audioPlayer.currentSource?.isLocal == true
+        }
         if usesRemoteStreaming {
             return sessionManager.isCurrentSession(for: book)
         }
-        guard let url = expectedURL ?? bookAudioURL else { return false }
+        guard audioPlayer.currentBookID == nil, let url = expectedURL ?? bookAudioURL else { return false }
         return audioPlayer.currentURL == url
     }
 
@@ -396,7 +433,27 @@ final class PlayerViewModel {
     /// loaded" even though the book's streaming session is still the one
     /// playing. The session check keeps matching in that case.
     func isCurrentPlaybackTarget() -> Bool {
-        isCurrentBookLoaded() || sessionManager.isCurrentSession(for: book)
+        audioPlayer.currentBookID == book.id || isCurrentBookLoaded() || sessionManager.isCurrentSession(for: book)
+    }
+
+    /// A downloaded remote book stored as one audio file (the pre-1.4 layout).
+    private var isSingleFileDownload: Bool {
+        guard book.isRemote, book.isDownloaded, let cachePath = book.localCachePath else { return false }
+        return !(cachePath as NSString).pathExtension.isEmpty
+    }
+
+    /// Replaces a streamed book's chapters with the server's, which cover all
+    /// of its files.
+    private func importServerChapters(_ chapters: [ABSChapter], source: PlaybackSource) {
+        guard let modelContext else { return }
+        let specs = RemoteChapterMapper.specs(from: chapters, timelineDuration: source.timeline.duration)
+        do {
+            if try RemoteChapterImporter.apply(specs, trackCount: source.trackURLs.count, to: book, in: modelContext) {
+                updateSortedChapters()
+            }
+        } catch {
+            AppLogger.ui.error("Error saving server chapters: \(error.localizedDescription, privacy: .private)")
+        }
     }
 
     private func fetchServer(for serverId: UUID?) -> ABSServer? {
@@ -412,7 +469,7 @@ final class PlayerViewModel {
         }
     }
 
-    private func startRemotePlaybackSession() async throws -> AuthenticatedStream {
+    private func startRemotePlaybackSession() async throws -> RemotePlaybackStart {
         guard let server = fetchServer(for: book.serverId) else {
             throw APIError.noActiveServer
         }
@@ -423,7 +480,7 @@ final class PlayerViewModel {
         let fileExists = await Task.detached(priority: .utility) {
             FileManager.default.fileExists(atPath: localAudioURL.path)
         }.value
-        guard audioPlayer.currentURL != localAudioURL else { return }
+        guard !(audioPlayer.currentBookID == book.id && audioPlayer.currentSource?.isLocal == true) else { return }
         if fileExists {
             // Local playback does not use an Audiobookshelf session. Close any
             // leftover remote session so progress sync does not keep targeting
@@ -433,7 +490,11 @@ final class PlayerViewModel {
             }
             let backupPosition = restorePositionFromUserDefaults()
             let startPosition = backupPosition ?? book.lastPlaybackPosition
-            audioPlayer.loadAudio(url: localAudioURL, title: book.title, duration: safeDuration, seekTo: startPosition)
+            audioPlayer.load(
+                source: .singleFile(url: localAudioURL, duration: safeDuration, bookID: book.id),
+                title: book.title,
+                seekTo: startPosition
+            )
 
             // If we restored from backup, also update the book's position
             if let backupPosition = backupPosition {
@@ -580,10 +641,16 @@ final class PlayerViewModel {
             session.currentIndex = nextIndex
             chapterPlaybackSession = session
             chapterTransitionLockUntil = Date().addingTimeInterval(PlaybackDefaults.timeObserverInterval + 0.25)
-            audioPlayer.seek(to: nextBoundary.startTime)
             audioPlayer.updateNowPlayingTitle("\(book.title) - \(nextBoundary.title)")
             AccessibilityNotifications.announce("Now playing chapter \(nextBoundary.title)")
-            persistPlaybackPosition(nextBoundary.startTime, errorMessage: "Couldn't save playback position.")
+            // When the next chapter starts where this one ends (for example one
+            // chapter per file), playback simply continues into it. Seeking
+            // would skip the last moments of this chapter and, across a file
+            // boundary, discard the preloaded next file.
+            if abs(nextBoundary.startTime - currentBoundary.endTime) > 0.05 {
+                audioPlayer.seek(to: nextBoundary.startTime)
+                persistPlaybackPosition(nextBoundary.startTime, errorMessage: "Couldn't save playback position.")
+            }
             return
         }
 

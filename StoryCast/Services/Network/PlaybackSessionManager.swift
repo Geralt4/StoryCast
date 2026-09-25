@@ -6,6 +6,14 @@ import os
 import UIKit
 #endif
 
+/// What the player needs to start streaming a remote book.
+struct RemotePlaybackStart {
+    let source: PlaybackSource
+    let chapters: [ABSChapter]
+    let resumePosition: Double
+    let sessionDuration: Double
+}
+
 @MainActor
 final class PlaybackSessionManager: ObservableObject {
     static let shared = PlaybackSessionManager()
@@ -24,6 +32,10 @@ final class PlaybackSessionManager: ObservableObject {
     private var isInBackground = false
     private var currentServer: ABSServer?
     private var currentItemId: String?
+    private var activeTitle: String?
+    private var activeBookID: UUID?
+    private var apiOverride: AudiobookshelfAPI?
+    private var api: AudiobookshelfAPI { apiOverride ?? .shared }
     private var sessionStartTime: Double = 0
     private var lastSyncedTime: Double = 0
     private var sessionDuration: Double = 0
@@ -96,19 +108,32 @@ final class PlaybackSessionManager: ObservableObject {
         return currentItemId == itemId && currentServer?.id == serverId
     }
     
-    func startSession(for book: Book, server: ABSServer) async throws -> AuthenticatedStream {
+    func startSession(for book: Book, server: ABSServer) async throws -> RemotePlaybackStart {
         guard let itemId = book.remoteItemId else { throw APIError.noActiveSession }
+        let bookID = book.id
+        let title = book.title
+        let resumePosition = book.lastPlaybackPosition
         
         await closeCurrentSession()
         await ProgressBackupStore.shared.attemptRecovery(server: server, itemId: itemId)
         
-        let (session, stream) = try await openSession(server: server, itemId: itemId)
+        let (session, source) = try await openSession(server: server, itemId: itemId, bookID: bookID)
+        // Sync the length of the files actually played; the item duration can
+        // include files the server excludes from playback.
+        let sessionDuration = source.timeline.duration
+        let startTime = source.timeline.clamp(resumePosition)
         configureSessionState(session: session, server: server, itemId: itemId,
-                              duration: session.duration ?? book.duration,
-                              startTime: session.currentTime ?? book.lastPlaybackPosition)
+                              duration: sessionDuration, startTime: startTime)
+        activeTitle = title
+        activeBookID = bookID
         startAppropriateTimer()
-        AppLogger.sync.info("Session \(session.id, privacy: .private) started; streaming from \(stream.url.host ?? "unknown", privacy: .private)")
-        return stream
+        AppLogger.sync.info("Session \(session.id, privacy: .private) started; streaming \(source.trackURLs.count) file(s) from \(source.identityURL.host ?? "unknown", privacy: .private)")
+        return RemotePlaybackStart(
+            source: source,
+            chapters: session.chapters ?? [],
+            resumePosition: startTime,
+            sessionDuration: sessionDuration
+        )
     }
     
     func closeCurrentSession() async {
@@ -126,7 +151,7 @@ final class PlaybackSessionManager: ObservableObject {
         }
         
         do {
-            try await AudiobookshelfAPI.shared.closeSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId, currentTime: currentTime, timeListened: listened, duration: duration)
+            try await api.closeSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId, currentTime: currentTime, timeListened: listened, duration: duration)
             ProgressBackupStore.shared.clear(serverURL: server.normalizedURL, itemId: itemId)
             AppLogger.sync.info("Session \(sessionId, privacy: .private) closed at \(currentTime)s (total listened: \(listened)s)")
         } catch {
@@ -182,7 +207,7 @@ private extension PlaybackSessionManager {
                 return
             }
             do {
-                try await AudiobookshelfAPI.shared.closeSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId,
+                try await self?.api.closeSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId,
                                                                  currentTime: AudioPlayerService.shared.currentTime,
                                                                  timeListened: self?.totalTimeListened ?? 0,
                                                                  duration: self?.sessionDuration ?? 0)
@@ -200,32 +225,53 @@ private extension PlaybackSessionManager {
     }
     
     func handleNetworkTransition(toCellular isExpensive: Bool) async {
-        guard activeSessionId != nil, let server = currentServer, let itemId = currentItemId else { return }
-        guard AudioPlayerService.shared.isPlaying else {
+        guard activeSessionId != nil, currentServer != nil, currentItemId != nil else { return }
+        let player = AudioPlayerService.shared
+        guard player.isPlaying else {
             AppLogger.sync.debug("Network transitioned but player is paused — no reconnection needed")
             return
         }
 
-        let currentPosition = AudioPlayerService.shared.currentTime
-        // Capture the duration BEFORE closeCurrentSession() runs, because
-        // clearSession() zeros sessionDuration. If reconnectSession later
-        // receives a session without a server-side duration, we fall back
-        // to this value instead of 0 (which would cause every progress
-        // sync to send duration: 0 to the server).
+        // The session and its per-file URLs stay valid across a network change,
+        // and AVPlayer usually recovers on its own. Reload only if playback
+        // stalled or failed, so a Wi-Fi/cellular switch doesn't discard buffered
+        // and preloaded audio.
+        let generation = player.loadGeneration
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        guard activeSessionId != nil, player.loadGeneration == generation else { return }
+        let stalled = player.lastPlaybackError != nil || (player.isPlaying && !player.isAudioAdvancing)
+        guard stalled, !player.isSeekPending else {
+            AppLogger.sync.debug("Network transitioned to \(isExpensive ? "cellular" : "WiFi"); playback continued without reconnecting")
+            return
+        }
+        await reconnectAfterNetworkChange(toCellular: isExpensive)
+    }
+
+    func reconnectAfterNetworkChange(toCellular isExpensive: Bool) async {
+        guard let server = currentServer, let itemId = currentItemId else { return }
+        let player = AudioPlayerService.shared
+        let currentPosition = player.currentTime
+        // Capture these BEFORE closeCurrentSession() runs, because
+        // clearSession() resets them.
         let previousDuration = sessionDuration
-        AppLogger.sync.info("Network transitioned to \(isExpensive ? "cellular" : "WiFi") — attempting reconnection")
+        let title = activeTitle ?? "StoryCast"
+        let bookID = activeBookID
+        AppLogger.sync.info("Network transitioned to \(isExpensive ? "cellular" : "WiFi") and playback stalled — reconnecting")
 
         await closeCurrentSession()
 
         do {
-            let stream = try await reconnectSession(
+            let source = try await reconnectSession(
                 server: server,
                 itemId: itemId,
+                bookID: bookID,
                 resumePosition: currentPosition,
                 fallbackDuration: previousDuration
             )
-            AudioPlayerService.shared.loadAuthenticatedAudio(stream: stream, title: AudioPlayerService.shared.currentURL?.lastPathComponent ?? "Unknown", duration: previousDuration, seekTo: currentPosition)
-            AudioPlayerService.shared.play()
+            activeTitle = title
+            activeBookID = bookID
+            player.load(source: source, title: title, seekTo: currentPosition)
+            player.play()
             AppLogger.sync.info("Successfully reconnected after network transition")
         } catch {
             AppLogger.sync.error("Failed to reconnect after network transition: \(error.localizedDescription, privacy: .private)")
@@ -234,28 +280,55 @@ private extension PlaybackSessionManager {
         }
     }
 
-    func reconnectSession(server: ABSServer, itemId: String, resumePosition: Double, fallbackDuration: TimeInterval) async throws -> AuthenticatedStream {
-        let (session, stream) = try await openSession(server: server, itemId: itemId)
+    func reconnectSession(server: ABSServer, itemId: String, bookID: UUID?, resumePosition: Double, fallbackDuration: TimeInterval) async throws -> PlaybackSource {
+        let (session, source) = try await openSession(server: server, itemId: itemId, bookID: bookID)
+        let duration = source.timeline.duration > 0 ? source.timeline.duration : fallbackDuration
         configureSessionState(session: session, server: server, itemId: itemId,
-                              duration: session.duration ?? fallbackDuration,
-                              startTime: session.currentTime ?? resumePosition)
-        startSyncTimer()
+                              duration: duration,
+                              startTime: resumePosition)
+        startAppropriateTimer()
         AppLogger.sync.info("Session \(session.id, privacy: .private) reconnected")
-        return stream
+        return source
     }
     
-    func openSession(server: ABSServer, itemId: String) async throws -> (ABSPlaybackSession, AuthenticatedStream) {
+    /// Opens a play session and builds a source from every file the server
+    /// lists, in play order. Each file URL is checked by the URL validator;
+    /// if any file is missing data or fails validation, the session fails.
+    func openSession(server: ABSServer, itemId: String, bookID: UUID?) async throws -> (ABSPlaybackSession, PlaybackSource) {
         guard let token = await AudiobookshelfAuth.shared.token(for: server.normalizedURL) else {
             throw APIError.tokenMissing
         }
         AppLogger.sync.info("Starting playback session for item \(itemId, privacy: .private)")
         
-        let session = try await AudiobookshelfAPI.shared.startPlaybackSession(baseURL: server.normalizedURL, token: token, itemId: itemId)
-        guard let firstTrack = session.audioTracks.first, let contentUrl = firstTrack.contentUrl else {
+        let session = try await api.startPlaybackSession(baseURL: server.normalizedURL, token: token, itemId: itemId)
+        let tracks = PlaybackTimeline.playbackOrder(session.audioTracks, startOffset: \.startOffset)
+        guard !tracks.isEmpty else { throw APIError.invalidResponse }
+
+        var urls: [URL] = []
+        var durations: [Double] = []
+        var headers: [String: String] = [:]
+        for track in tracks {
+            guard let duration = track.duration, duration.isFinite, duration >= 0 else {
+                throw APIError.invalidResponse
+            }
+            let contentUrl = track.contentUrl ?? track.ino.map { "/api/items/\(itemId)/file/\($0)" }
+            guard let contentUrl else { throw APIError.invalidResponse }
+            let stream = try await api.authenticatedStream(baseURL: server.normalizedURL, token: token, contentUrl: contentUrl)
+            urls.append(stream.url)
+            durations.append(duration)
+            headers = stream.headers
+        }
+        guard let timeline = PlaybackTimeline(durations: durations),
+              let source = PlaybackSource(
+                bookID: bookID,
+                identityURL: urls[0],
+                trackURLs: urls,
+                timeline: timeline,
+                httpHeaders: headers
+              ) else {
             throw APIError.invalidResponse
         }
-        let stream = try await AudiobookshelfAPI.shared.authenticatedStream(baseURL: server.normalizedURL, token: token, contentUrl: contentUrl)
-        return (session, stream)
+        return (session, source)
     }
     
     func configureSessionState(session: ABSPlaybackSession, server: ABSServer, itemId: String, duration: Double, startTime: Double) {
@@ -302,7 +375,7 @@ private extension PlaybackSessionManager {
         defer { isSyncing = false }
         
         do {
-            try await AudiobookshelfAPI.shared.syncSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId, currentTime: currentTime, timeListened: listened, duration: duration)
+            try await api.syncSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId, currentTime: currentTime, timeListened: listened, duration: duration)
             lastSyncedTime = currentTime
             totalTimeListened = 0
             if let itemId = currentItemId {
@@ -359,6 +432,8 @@ private extension PlaybackSessionManager {
         activeSessionId = nil
         currentServer = nil
         currentItemId = nil
+        activeTitle = nil
+        activeBookID = nil
         sessionDuration = 0
         sessionStartTime = 0
         lastSyncedTime = 0
@@ -410,6 +485,14 @@ extension PlaybackSessionManager {
 
     func debugSetLastObservedTime(_ time: Double) { lastObservedTime = time }
     func debugResetListenedTime() { totalTimeListened = 0 }
+    var debugSessionDuration: Double { sessionDuration }
+    var debugActiveTitle: String? { activeTitle }
+
+    func debugOverrideAPI(_ api: AudiobookshelfAPI?) { apiOverride = api }
+    func debugResetSession() {
+        stopAllTimers()
+        clearSession()
+    }
     func debugClearSeeking() {
         isSeekingClearTask?.cancel()
         isSeekingClearTask = nil
