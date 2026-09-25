@@ -158,6 +158,27 @@ nonisolated struct PlaybackSource: Sendable, Equatable {
         )!
     }
 
+    /// A copy whose hinted single-file timeline is at least `minimum` long, so a
+    /// resume position is never clamped by a guessed duration before the real
+    /// length is known.
+    func withDurationHint(atLeast minimum: Double) -> PlaybackSource {
+        guard durationIsHint, trackURLs.count == 1,
+              minimum.isFinite, minimum > timeline.duration,
+              let timeline = PlaybackTimeline(durations: [minimum]),
+              let widened = PlaybackSource(
+                bookID: bookID,
+                identityURL: identityURL,
+                trackURLs: trackURLs,
+                timeline: timeline,
+                httpHeaders: httpHeaders,
+                durationIsHint: true,
+                coversWholeBook: coversWholeBook
+              ) else {
+            return self
+        }
+        return widened
+    }
+
     /// A copy whose single-file timeline uses the length measured from the asset.
     func withMeasuredDuration(_ measured: Double) -> PlaybackSource {
         guard durationIsHint, trackURLs.count == 1,

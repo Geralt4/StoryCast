@@ -410,5 +410,10 @@ extension PlaybackSessionManager {
 
     func debugSetLastObservedTime(_ time: Double) { lastObservedTime = time }
     func debugResetListenedTime() { totalTimeListened = 0 }
+    func debugClearSeeking() {
+        isSeekingClearTask?.cancel()
+        isSeekingClearTask = nil
+        isSeeking = false
+    }
 }
 #endif
