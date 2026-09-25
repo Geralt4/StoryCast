@@ -193,7 +193,7 @@ nonisolated final class DownloadManagerTests: XCTestCase {
 
         DownloadManager.shared.cancelDownload(bookId: book.id)
 
-        XCTAssertTrue(tasks.values.allSatisfy { $0.state == .canceling || $0.state == .completed })
+        XCTAssertTrue(tasks.values.allSatisfy(isCancelled))
         XCTAssertFalse(FileManager.default.fileExists(atPath: DownloadStaging.folder(for: book.id).path))
         XCTAssertNil(DownloadManager.shared.downloads[book.id])
         XCTAssertTrue(DownloadManager.shared.failureNotices.isEmpty)
@@ -209,7 +209,7 @@ nonisolated final class DownloadManagerTests: XCTestCase {
 
         DownloadManager.shared.debugHandleTaskError(tag(manifest, 1), error: DownloadFailure.forbidden, reason: nil)
 
-        XCTAssertEqual(tasks[2]?.state, .canceling)
+        XCTAssertTrue(isCancelled(try XCTUnwrap(tasks[2])))
         XCTAssertEqual(DownloadManager.shared.downloads[book.id]?.failure, .forbidden)
         XCTAssertEqual(DownloadStaging.missingTrackIndices(for: manifest), [1, 2])
         XCTAssertEqual(DownloadManager.shared.failureNotices.map(\.failure), [.forbidden])
@@ -370,8 +370,8 @@ nonisolated final class DownloadManagerTests: XCTestCase {
 
         DownloadManager.shared.reconcile(tasks: [untagged, orphan], stagingRoot: stagingRoot)
 
-        XCTAssertEqual(untagged.state, .canceling)
-        XCTAssertEqual(orphan.state, .canceling)
+        XCTAssertTrue(isCancelled(untagged))
+        XCTAssertTrue(isCancelled(orphan))
     }
 
     @MainActor
@@ -412,6 +412,11 @@ nonisolated final class DownloadManagerTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// A cancelled task moves from `.canceling` to `.completed` on its own.
+    private func isCancelled(_ task: URLSessionTask) -> Bool {
+        task.state == .canceling || task.state == .completed
+    }
 
     private func makeContainer() throws -> ModelContainer {
         let schema = Schema(versionedSchema: SchemaV6.self)
