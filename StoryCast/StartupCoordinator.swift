@@ -60,6 +60,7 @@ final class StartupCoordinator: ObservableObject {
                 Task(priority: .utility) {
                     // Network work stays off the path the library waits on: an
                     // unreachable server must not hold the app on the loading screen.
+                    RemoteDownloadLayout.emptyTrash()
                     await PlaybackSessionManager.shared.recoverPendingProgressIfNeeded(container: container)
                     await LibraryMaintenanceService.syncRemoteLibraries(container: container)
                 }
@@ -141,6 +142,7 @@ final class StartupCoordinator: ObservableObject {
             try await StorageManager.shared.setupStoryCastLibraryDirectory()
             try await StorageManager.shared.setupCoverArtDirectory()
             try await StorageManager.shared.setupRemoteAudioCacheDirectory()
+            try await StorageManager.shared.setupDownloadStagingDirectory()
             try await StorageManager.shared.setupRemoteCoverArtDirectory()
             try await StorageManager.shared.migrateFileProtectionIfNeeded()
             try await StorageManager.shared.migrateRemoteAssetsIfNeeded(container: container)

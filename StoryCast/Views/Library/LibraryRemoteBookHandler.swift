@@ -97,6 +97,13 @@ final class LibraryRemoteBookHandler {
     func removeDownloadedBook(_ book: Book) {
         guard book.isRemote, book.isDownloaded, let cachePath = book.localCachePath else { return }
         
+        // Stop playing the downloaded files before they are deleted; otherwise
+        // the next queued file would fail mid-book.
+        let player = AudioPlayerService.shared
+        if player.currentBookID == book.id, player.currentSource?.isLocal == true {
+            player.unload()
+        }
+
         Task {
             let previousIsDownloaded = book.isDownloaded
             let previousLocalCachePath = book.localCachePath
@@ -119,144 +126,6 @@ final class LibraryRemoteBookHandler {
                     "Failed to update book record after cache removal: \(error.localizedDescription, privacy: .private)"
                 )
             }
-        }
-    }
-    
-    /// Downloads multiple remote books sequentially.
-    ///
-    /// - Parameter books: Array of remote books to download.
-    /// - Parameter completion: Callback with count of successful downloads.
-    ///
-    /// ## Performance Considerations
-    /// Downloads are processed sequentially to avoid overwhelming the network
-    /// and to provide predictable progress. Consider background queue for large batches.
-    func downloadBooks(_ books: [Book], completion: ((Int) -> Void)? = nil) {
-        Task {
-            var successfulCount = 0
-            
-            for book in books {
-                guard book.isRemote, let serverId = book.serverId else { continue }
-                
-                let descriptor = FetchDescriptor<ABSServer>(predicate: #Predicate { $0.id == serverId })
-                do {
-                    guard let server = try modelContext.fetch(descriptor).first else {
-                        AppLogger.network.warning("Server not found for batch download: \(serverId.uuidString, privacy: .private(mask: .hash))")
-                        continue
-                    }
-                    try await DownloadManager.shared.downloadBook(
-                        book,
-                        server: server,
-                        container: modelContext.container
-                    )
-                    successfulCount += 1
-                } catch {
-                    AppLogger.network.error(
-                        "Failed to download book '\(book.title, privacy: .private)' in batch: \(error.localizedDescription, privacy: .private)"
-                    )
-                }
-            }
-            
-            completion?(successfulCount)
-        }
-    }
-    
-    /// Removes downloaded cache for multiple remote books.
-    ///
-    /// - Parameter books: Array of remote books to remove from cache.
-    /// - Returns: Count of books successfully removed from cache.
-    ///
-    /// ## File Operations
-    /// File deletions are performed in a detached task to avoid blocking the UI.
-    /// Book record updates are batched into a single save operation for efficiency.
-    func removeDownloadedBooks(_ books: [Book]) async -> Int {
-        let booksToRemove = books.filter { $0.isRemote && $0.isDownloaded && $0.localCachePath != nil }
-        guard !booksToRemove.isEmpty else { return 0 }
-        
-        let originalStates = booksToRemove.map { book in
-            (book: book, isDownloaded: book.isDownloaded, localCachePath: book.localCachePath)
-        }
-
-        do {
-            for state in originalStates {
-                guard let cachePath = state.localCachePath else { continue }
-                _ = try StorageCleanupCoordinator.stage(
-                    location: .remoteAudioCache,
-                    relativePath: cachePath,
-                    in: modelContext
-                )
-                state.book.isDownloaded = false
-                state.book.localCachePath = nil
-            }
-            try modelContext.save()
-        } catch {
-            modelContext.rollback()
-            for state in originalStates {
-                state.book.isDownloaded = state.isDownloaded
-                state.book.localCachePath = state.localCachePath
-            }
-            AppLogger.storage.error(
-                "Failed to save batch cache removal: \(error.localizedDescription, privacy: .private)"
-            )
-            return 0
-        }
-
-        StorageCleanupCoordinator.drainPendingCleanup(in: modelContext)
-        
-        return originalStates.count
-    }
-    
-    /// Checks if a remote book is fully downloaded and the cache is valid.
-    ///
-    /// - Parameter book: The remote book to check.
-    /// - Returns: `true` if the book is marked as downloaded and the cache file exists.
-    func isBookDownloadValid(_ book: Book) -> Bool {
-        guard book.isRemote, book.isDownloaded, let cachePath = book.localCachePath else {
-            return false
-        }
-        
-        let fileURL = StorageManager.shared.resolvedRemoteAudioCacheURL(for: cachePath)
-        return FileManager.default.fileExists(atPath: fileURL.path)
-    }
-    
-    /// Returns the total size of cached files for a list of remote books.
-    ///
-    /// - Parameter books: Array of remote books to calculate cache size for.
-    /// - Returns: Total size in bytes, or `nil` if unable to calculate.
-    func cachedSize(for books: [Book]) async -> Int64? {
-        let booksWithCache = books.filter { $0.isRemote && $0.isDownloaded && $0.localCachePath != nil }
-        
-        return await withTaskGroup(of: Int64?.self) { group -> Int64 in
-            for book in booksWithCache {
-                guard let cachePath = book.localCachePath else { continue }
-                let bookTitle = book.title
-                
-                group.addTask {
-                    let fileURL = StorageManager.shared.resolvedRemoteAudioCacheURL(for: cachePath)
-                    guard FileManager.default.fileExists(atPath: fileURL.path) else { return 0 }
-                    
-                    do {
-                        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
-                        if let size = attributes[.size] as? NSNumber {
-                            return size.int64Value
-                        }
-                    } catch {
-                        AppLogger.storage.debug(
-                            "Failed to get file size for '\(bookTitle, privacy: .private)': \(error.localizedDescription, privacy: .private)"
-                        )
-                    }
-                    
-                    return 0
-                }
-            }
-            
-            var total: Int64 = 0
-            for await size in group {
-                if let size = size {
-                    total += size
-                }
-            }
-            
-            return total
         }
     }
 }
