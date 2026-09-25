@@ -62,6 +62,7 @@ final class StartupCoordinator: ObservableObject {
                     // unreachable server must not hold the app on the loading screen.
                     RemoteDownloadLayout.emptyTrash()
                     await PlaybackSessionManager.shared.recoverPendingProgressIfNeeded(container: container)
+                    await LegacyRemoteDownloadValidator.runIfNeeded(container: container)
                     await LibraryMaintenanceService.syncRemoteLibraries(container: container)
                 }
             } catch {
