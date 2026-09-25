@@ -294,12 +294,17 @@ enum SyncOutboxPlanner {
             let progressRecordName = SyncRecordName.progress(bookID: book.id, deviceID: deviceID)
             if !hasAnyOperation(for: progressRecordName, in: operationsBySubject) {
                 let existingHead = allProgressHeads.first(where: { $0.id == progressRecordName })
+                // A book this device never played (e.g. one that just arrived by
+                // sync) must not publish "position 0, now": that would win the
+                // actionAt comparison and reset the real listener's position.
+                let synthesizedActionAt = book.lastPlayedDate
+                    ?? (book.lastPlaybackPosition > 0 ? Date() : .distantPast)
                 let action = SyncProgressAction(
                     bookID: book.id,
                     deviceID: deviceID,
                     actionID: existingHead?.actionID ?? UUID(),
                     position: existingHead?.position ?? book.lastPlaybackPosition,
-                    actionAt: existingHead?.actionAt ?? book.lastPlayedDate ?? Date(),
+                    actionAt: existingHead?.actionAt ?? synthesizedActionAt,
                     sequence: max(1, existingHead?.sequence ?? 0),
                     actionKind: existingHead?.actionKindRaw ?? "checkpoint"
                 )

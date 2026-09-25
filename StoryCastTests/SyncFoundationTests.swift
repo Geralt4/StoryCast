@@ -523,6 +523,57 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertEqual(secondPlan.operationCount, 0)
     }
 
+    func testPlannerDoesNotLetUnplayedBookProgressOverrideRealProgress() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let folder = Folder(name: "Fiction", isSystem: false, sortOrder: 1)
+        let book = Book(title: "Arrived by sync", localFileName: "book.m4b", duration: 120, folder: folder)
+        let audio = SyncAsset(
+            bookID: book.id,
+            kindRaw: SyncAssetKind.audio.rawValue,
+            originalFileName: "book.m4b",
+            pathExtension: "m4b",
+            contentTypeIdentifier: "public.audiovisual-content",
+            byteCount: 4,
+            sha256Hex: "audio-digest",
+            localRelativePath: "book.m4b",
+            localStateRaw: SyncAssetLocalState.verified.rawValue,
+            lastVerifiedAt: Date()
+        )
+        context.insert(folder)
+        context.insert(book)
+        context.insert(audio)
+        try context.save()
+
+        _ = try SyncOutboxPlanner.plan(container: container, deviceID: "device-b")
+
+        let head = try XCTUnwrap(try context.fetch(FetchDescriptor<SyncProgressHead>()).first {
+            $0.id == SyncRecordName.progress(bookID: book.id, deviceID: "device-b")
+        })
+        XCTAssertEqual(head.position, 0)
+        XCTAssertEqual(head.actionAt, .distantPast)
+
+        let realListening = SyncProgressAction(
+            bookID: book.id,
+            deviceID: "device-a",
+            actionID: UUID(),
+            position: 10_800,
+            actionAt: Date(timeIntervalSince1970: 1_000),
+            sequence: 1,
+            actionKind: "checkpoint"
+        )
+        let synthesized = SyncProgressAction(
+            bookID: book.id,
+            deviceID: "device-b",
+            actionID: head.actionID,
+            position: head.position,
+            actionAt: head.actionAt,
+            sequence: head.sequence,
+            actionKind: head.actionKindRaw
+        )
+        XCTAssertEqual(SyncProgressConflictResolver.winner(synthesized, realListening).position, 10_800)
+    }
+
     func testPlannerQueuesNewRevisionsForMetadataAndChapterChanges() throws {
         let container = try makeContainer()
         let context = ModelContext(container)
