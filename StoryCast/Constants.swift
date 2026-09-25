@@ -44,6 +44,8 @@ enum TimerDefaults {
 
 enum ImportDefaults {
     nonisolated static let downloadTimeout: TimeInterval = 300
+    /// A remote-book download is failed only after this long without new bytes.
+    nonisolated static let downloadStallTimeout: TimeInterval = 300
     nonisolated static let maxRetries: Int = 3
 }
 
