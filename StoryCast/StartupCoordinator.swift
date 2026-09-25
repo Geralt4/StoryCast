@@ -58,6 +58,9 @@ final class StartupCoordinator: ObservableObject {
                 scheduleMaintenanceIfNeeded(container: container)
                 await maintenanceTask?.value
                 Task(priority: .utility) {
+                    // Network work stays off the path the library waits on: an
+                    // unreachable server must not hold the app on the loading screen.
+                    await PlaybackSessionManager.shared.recoverPendingProgressIfNeeded(container: container)
                     await LibraryMaintenanceService.syncRemoteLibraries(container: container)
                 }
             } catch {
@@ -76,8 +79,6 @@ final class StartupCoordinator: ObservableObject {
         let pathBasedDeduplicationKey = pathBasedDeduplicationKey
         let normalizedURLMigrationKey = normalizedURLMigrationKey
         maintenanceTask = Task(priority: .utility) { [weak self] in
-            await PlaybackSessionManager.shared.recoverPendingProgressIfNeeded(container: container)
-
             let cleanupContext = ModelContext(container)
             _ = await MainActor.run {
                 StorageCleanupCoordinator.drainPendingCleanup(in: cleanupContext)

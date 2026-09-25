@@ -241,13 +241,19 @@ class AudioPlayerService: ObservableObject {
     }
 
     /// Moves to `time` in whole-book seconds, switching files when needed.
-    func seek(to time: Double) {
+    /// Pass `isUserInitiated: false` for seeks the app makes on its own (such
+    /// as adopting a newer position from the server), which must not count as
+    /// the listener changing their position.
+    func seek(to time: Double, isUserInitiated: Bool = true) {
         guard time.isFinite, time >= 0 else {
             AppLogger.playback.warning("Ignoring seek to invalid time: \(time)")
             return
         }
         guard let player, let source = currentSource else { return }
         PlaybackSessionManager.shared.markSeeking()
+        if isUserInitiated, let bookID = currentBookID {
+            PlaybackProgressTracker.shared.recordChange(bookID: bookID)
+        }
 
         let location = source.timeline.location(for: source.timeline.clamp(time))
         let target = source.timeline.globalTime(segmentIndex: location.segmentIndex, offset: location.offset)
