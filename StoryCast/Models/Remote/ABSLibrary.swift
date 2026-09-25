@@ -138,4 +138,7 @@ nonisolated struct ABSAudioTrack: Codable {
     let contentUrl: String?
     let mimeType: String?
     let metadata: ABSFileMetadata?
+    /// Server file identifier; optional so older servers without it still decode.
+    let ino: String?
+    let codec: String?
 }

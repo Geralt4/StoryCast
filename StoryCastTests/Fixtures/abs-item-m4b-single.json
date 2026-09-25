@@ -1,0 +1,227 @@
+{
+  "id": "1f9a25a0-1cf1-4f87-b709-29dbfbb02773",
+  "ino": "11026908",
+  "oldLibraryItemId": null,
+  "libraryId": "a1ebcb22-9f95-47fd-b162-19e164eee0af",
+  "folderId": "4b816a06-95bf-4a3c-b01c-8a9f048e74ed",
+  "path": "/library/StoryCast Test/Single M4B Book",
+  "relPath": "StoryCast Test/Single M4B Book",
+  "isFile": false,
+  "mtimeMs": 1790331461697,
+  "ctimeMs": 1790331461697,
+  "birthtimeMs": 1790331459276,
+  "addedAt": 1790331479127,
+  "updatedAt": 1790331479127,
+  "isMissing": false,
+  "isInvalid": false,
+  "mediaType": "book",
+  "media": {
+    "id": "f1ff4205-b9c6-4f11-bba4-f6328c4e66e3",
+    "metadata": {
+      "title": "Single M4B Book",
+      "subtitle": null,
+      "authors": [
+        {
+          "id": "90aabfee-c33b-4892-8ba3-44f316b9a165",
+          "name": "StoryCast Test Author"
+        }
+      ],
+      "narrators": [],
+      "series": [],
+      "genres": [],
+      "publishedYear": null,
+      "publishedDate": null,
+      "publisher": null,
+      "description": null,
+      "isbn": null,
+      "asin": null,
+      "language": null,
+      "explicit": false,
+      "abridged": false,
+      "titleIgnorePrefix": "Single M4B Book",
+      "authorName": "StoryCast Test Author",
+      "authorNameLF": "Author, StoryCast Test",
+      "narratorName": "",
+      "seriesName": "",
+      "descriptionPlain": null
+    },
+    "coverPath": null,
+    "tags": [],
+    "numTracks": 1,
+    "numAudioFiles": 1,
+    "numChapters": 3,
+    "duration": 150,
+    "size": 1235177,
+    "libraryItemId": "1f9a25a0-1cf1-4f87-b709-29dbfbb02773",
+    "audioFiles": [
+      {
+        "index": 1,
+        "ino": "11026929",
+        "metadata": {
+          "filename": "Single M4B Book.m4b",
+          "ext": ".m4b",
+          "path": "/library/StoryCast Test/Single M4B Book/Single M4B Book.m4b",
+          "relPath": "Single M4B Book.m4b",
+          "size": 1235177,
+          "mtimeMs": 1790331462525,
+          "ctimeMs": 1790331462525,
+          "birthtimeMs": 1790331461697
+        },
+        "addedAt": 1790331479125,
+        "updatedAt": 1790331479125,
+        "trackNumFromMeta": null,
+        "discNumFromMeta": null,
+        "trackNumFromFilename": null,
+        "discNumFromFilename": null,
+        "manuallyVerified": false,
+        "exclude": false,
+        "error": null,
+        "format": "QuickTime / MOV",
+        "duration": 150,
+        "bitRate": 64399,
+        "language": "und",
+        "codec": "aac",
+        "timeBase": "1/44100",
+        "channels": 1,
+        "channelLayout": "mono",
+        "chapters": [
+          {
+            "start": 0,
+            "end": 50,
+            "title": "Chapter One",
+            "id": 0
+          },
+          {
+            "start": 50,
+            "end": 100,
+            "title": "Chapter Two",
+            "id": 1
+          },
+          {
+            "start": 100,
+            "end": 150,
+            "title": "Chapter Three",
+            "id": 2
+          }
+        ],
+        "embeddedCoverArt": null,
+        "metaTags": {
+          "tagAlbum": "Single M4B Book",
+          "tagArtist": "StoryCast Test Author",
+          "tagTitle": "Single M4B Book",
+          "tagEncoder": "Lavf63.1.102"
+        },
+        "mimeType": "audio/mp4"
+      }
+    ],
+    "chapters": [
+      {
+        "start": 0,
+        "end": 50,
+        "title": "Chapter One",
+        "id": 0
+      },
+      {
+        "start": 50,
+        "end": 100,
+        "title": "Chapter Two",
+        "id": 1
+      },
+      {
+        "start": 100,
+        "end": 150,
+        "title": "Chapter Three",
+        "id": 2
+      }
+    ],
+    "ebookFile": null,
+    "tracks": [
+      {
+        "index": 1,
+        "ino": "11026929",
+        "metadata": {
+          "filename": "Single M4B Book.m4b",
+          "ext": ".m4b",
+          "path": "/library/StoryCast Test/Single M4B Book/Single M4B Book.m4b",
+          "relPath": "Single M4B Book.m4b",
+          "size": 1235177,
+          "mtimeMs": 1790331462525,
+          "ctimeMs": 1790331462525,
+          "birthtimeMs": 1790331461697
+        },
+        "addedAt": 1790331479125,
+        "updatedAt": 1790331479125,
+        "trackNumFromMeta": null,
+        "discNumFromMeta": null,
+        "trackNumFromFilename": null,
+        "discNumFromFilename": null,
+        "manuallyVerified": false,
+        "exclude": false,
+        "error": null,
+        "format": "QuickTime / MOV",
+        "duration": 150,
+        "bitRate": 64399,
+        "language": "und",
+        "codec": "aac",
+        "timeBase": "1/44100",
+        "channels": 1,
+        "channelLayout": "mono",
+        "chapters": [
+          {
+            "start": 0,
+            "end": 50,
+            "title": "Chapter One",
+            "id": 0
+          },
+          {
+            "start": 50,
+            "end": 100,
+            "title": "Chapter Two",
+            "id": 1
+          },
+          {
+            "start": 100,
+            "end": 150,
+            "title": "Chapter Three",
+            "id": 2
+          }
+        ],
+        "embeddedCoverArt": null,
+        "metaTags": {
+          "tagAlbum": "Single M4B Book",
+          "tagArtist": "StoryCast Test Author",
+          "tagTitle": "Single M4B Book",
+          "tagEncoder": "Lavf63.1.102"
+        },
+        "mimeType": "audio/mp4",
+        "title": "Single M4B Book.m4b",
+        "startOffset": 0,
+        "contentUrl": "/api/items/1f9a25a0-1cf1-4f87-b709-29dbfbb02773/file/11026929"
+      }
+    ]
+  },
+  "numFiles": 1,
+  "size": 1235177,
+  "lastScan": 1790331479126,
+  "scanVersion": "2.36.1",
+  "libraryFiles": [
+    {
+      "ino": "11026929",
+      "metadata": {
+        "filename": "Single M4B Book.m4b",
+        "ext": ".m4b",
+        "path": "/library/StoryCast Test/Single M4B Book/Single M4B Book.m4b",
+        "relPath": "Single M4B Book.m4b",
+        "size": 1235177,
+        "mtimeMs": 1790331462525,
+        "ctimeMs": 1790331462525,
+        "birthtimeMs": 1790331461697
+      },
+      "isSupplementary": null,
+      "addedAt": 1790331479091,
+      "updatedAt": 1790331479091,
+      "fileType": "audio"
+    }
+  ],
+  "userMediaProgress": null
+}
