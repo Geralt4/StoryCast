@@ -35,9 +35,18 @@ final class PlaybackProgressTracker {
         }
     }
 
-    /// The server now has this book's latest position.
-    func markSynced(bookID: UUID) {
+    /// This device took the server's (newer) position: nothing here is left
+    /// to sync, and the position last changed when the server's did.
+    func adoptServerPosition(bookID: UUID, changedAt: Date?) {
+        cache[bookID] = State(changedAt: changedAt ?? Date(), isDirty: false)
+        persist(bookID)
+    }
+
+    /// The server now has this book's position as of `through` (by default,
+    /// the latest). A change made after `through` stays unsynced.
+    func markSynced(bookID: UUID, through: Date? = nil) {
         guard var current = state(for: bookID), current.isDirty else { return }
+        if let through, current.changedAt > through { return }
         current.isDirty = false
         cache[bookID] = current
         persist(bookID)

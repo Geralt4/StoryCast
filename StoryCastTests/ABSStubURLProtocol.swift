@@ -21,8 +21,10 @@ final class ABSStubURLProtocol: URLProtocol {
         }
     }
 
-    static func stub(path: String, status: Int = 200, body: Data, headers: [String: String] = ["Content-Type": "application/json"]) {
-        lock.withLock { responses[path] = Response(status: status, body: body, headers: headers) }
+    /// Stubs a path for every method, or only for `method` when given.
+    static func stub(path: String, method: String? = nil, status: Int = 200, body: Data, headers: [String: String] = ["Content-Type": "application/json"]) {
+        let key = method.map { "\($0) \(path)" } ?? path
+        lock.withLock { responses[key] = Response(status: status, body: body, headers: headers) }
     }
 
     static var requests: [URLRequest] { lock.withLock { recordedRequests } }
@@ -47,7 +49,7 @@ final class ABSStubURLProtocol: URLProtocol {
         }
         let stub = Self.lock.withLock { () -> Response? in
             Self.recordedRequests.append(recorded)
-            return Self.responses[url.path]
+            return Self.responses["\(recorded.httpMethod ?? "GET") \(url.path)"] ?? Self.responses[url.path]
         }
         guard let stub else {
             client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))

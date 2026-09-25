@@ -112,6 +112,8 @@ nonisolated final class PlaybackSessionManagerMultiTrackTests: XCTestCase {
     @MainActor
     private func makeBook(fixture: String, position: Double) throws -> (Book, ABSServer, ABSPlaybackSession) {
         let session = try ABSFixtures.playSession(fixture)
+        // No progress on the server, so the book resumes from this device's position.
+        ABSStubURLProtocol.stub(path: "/api/me/progress/\(session.libraryItemId)", status: 404, body: Data())
         let schema = Schema(versionedSchema: SchemaV6.self)
         let container = try ModelContainer(
             for: schema,

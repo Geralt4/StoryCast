@@ -42,6 +42,7 @@ final class PlayerViewModel {
     /// Set when a downloaded copy turned out to be unusable, so the book
     /// streams instead for the rest of this screen's life.
     private var streamingFallback = false
+    private var serverPositionTask: Task<Void, Never>?
     /// The book's saved position when this view model last loaded it; a source
     /// that may hold only part of the book never saves an end position below it.
     private var positionAtLoad: Double = 0
@@ -142,6 +143,9 @@ final class PlayerViewModel {
         if audioPlayer.isPlaying, isCurrentBookLoaded(expectedURL: audioURL) {
             updateLastPlayedDate()
         }
+        if isCurrentBookLoaded(expectedURL: audioURL) {
+            recheckServerPositionIfStale()
+        }
         if !isCurrentBookLoaded(expectedURL: audioURL) {
             // Cancel sleep timer when switching to a different book
             if sleepTimer.isActive {
@@ -234,6 +238,7 @@ final class PlayerViewModel {
         playbackSaveErrorTask?.cancel()
         remotePlaybackTask?.cancel()
         localPlaybackTask?.cancel()
+        serverPositionTask?.cancel()
         periodicSaveTimer?.invalidate()
         periodicSaveTimer = nil
         clearChapterPlaybackSession()
@@ -292,6 +297,10 @@ final class PlayerViewModel {
     }
 
     func handleScenePhaseChange(_ newPhase: ScenePhase) {
+        if newPhase == .active {
+            recheckServerPositionIfStale()
+            return
+        }
         guard newPhase == .inactive || newPhase == .background else { return }
         guard isCurrentPlaybackTarget() else { return }
         forceSavePlaybackPosition(audioPlayer.currentTime, errorMessage: "Couldn't save playback position.")
@@ -456,6 +465,9 @@ final class PlayerViewModel {
                 let start = try await startRemotePlaybackSession()
                 guard !Task.isCancelled else { return }
                 importServerChapters(start.chapters, source: start.source)
+                if start.resumeSource == .server {
+                    adoptServerPosition(start.resumePosition, serverUpdatedAt: start.serverUpdatedAt)
+                }
                 audioPlayer.load(source: start.source, title: book.title, seekTo: start.resumePosition)
             } catch APIError.noActiveServer {
                 showRemoteServerError = true
@@ -477,7 +489,8 @@ final class PlayerViewModel {
         guard let server = fetchServer(for: book.serverId) else {
             throw APIError.noActiveServer
         }
-        return try await sessionManager.startSession(for: book, server: server)
+        let localPosition = restorePositionFromUserDefaults() ?? book.lastPlaybackPosition
+        return try await sessionManager.startSession(for: book, server: server, localPosition: localPosition)
     }
 
     private enum LocalPlayback: Sendable {
@@ -560,6 +573,18 @@ final class PlayerViewModel {
             let backupPosition = restorePositionFromUserDefaults()
             let startPosition = backupPosition ?? book.lastPlaybackPosition
             audioPlayer.load(source: source, title: book.title, seekTo: startPosition)
+            if book.isRemote, source.coversWholeBook,
+               let itemId = book.remoteItemId, let server = fetchServer(for: book.serverId) {
+                // Downloaded books sync progress without a play session, and
+                // move to the server's position if it is newer.
+                sessionManager.beginSessionlessReporting(
+                    bookID: book.id,
+                    itemId: itemId,
+                    serverURL: server.normalizedURL,
+                    duration: source.timeline.duration
+                )
+                scheduleServerPositionCheck(server: server)
+            }
 
             // If we restored from backup, also update the book's position
             if let backupPosition = backupPosition {
@@ -591,6 +616,54 @@ final class PlayerViewModel {
                 showRemoteServerError = true
                 remoteServerErrorMessage = "This book's download is incomplete. Connect to your Audiobookshelf server to keep listening, then download it again."
             }
+        }
+    }
+
+    /// Takes the server's newer position as this book's saved position.
+    private func adoptServerPosition(_ position: Double, serverUpdatedAt: Date?) {
+        forceSavePlaybackPosition(position, errorMessage: "Couldn't save playback position.")
+        clearPositionBackup()
+        PlaybackProgressTracker.shared.adoptServerPosition(bookID: book.id, changedAt: serverUpdatedAt)
+    }
+
+    /// Re-checks the server when this remote book is loaded but paused and
+    /// hasn't moved here for a while: the book may have been played further
+    /// on another device meanwhile.
+    func recheckServerPositionIfStale() {
+        guard book.isRemote, audioPlayer.currentBookID == book.id, !audioPlayer.isPlaying,
+              audioPlayer.currentSource?.coversWholeBook == true,
+              let server = fetchServer(for: book.serverId) else { return }
+        if let changedAt = PlaybackProgressTracker.shared.lastChange(bookID: book.id),
+           Date().timeIntervalSince(changedAt) < 60 {
+            return
+        }
+        scheduleServerPositionCheck(server: server)
+    }
+
+    /// Fetches the server's progress and moves there if it is newer, as long
+    /// as the listener hasn't played or sought since.
+    private func scheduleServerPositionCheck(server: ABSServer) {
+        guard let itemId = book.remoteItemId, NetworkMonitor.shared.isConnected else { return }
+        let generation = audioPlayer.loadGeneration
+        let tracker = PlaybackProgressTracker.shared
+        let changeBefore = tracker.lastChange(bookID: book.id)
+        serverPositionTask?.cancel()
+        serverPositionTask = Task { @MainActor in
+            guard let fetched = await sessionManager.fetchProgressSnapshot(server: server, itemId: itemId),
+                  !Task.isCancelled,
+                  audioPlayer.loadGeneration == generation,
+                  audioPlayer.currentBookID == book.id,
+                  !audioPlayer.isPlaying, !audioPlayer.isSeekPending,
+                  tracker.lastChange(bookID: book.id) == changeBefore else { return }
+            let decision = ResumePositionResolver.resolve(
+                local: .init(position: audioPlayer.currentTime, changedAt: changeBefore, isDirty: tracker.isDirty(bookID: book.id)),
+                server: fetched,
+                timelineDuration: audioPlayer.duration
+            )
+            guard decision.source == .server, abs(decision.position - audioPlayer.currentTime) > 1 else { return }
+            AppLogger.playback.info("Moving to newer server position \(decision.position)s")
+            audioPlayer.seek(to: decision.position, isUserInitiated: false)
+            adoptServerPosition(decision.position, serverUpdatedAt: fetched?.lastUpdateOnDeviceClock)
         }
     }
 
