@@ -104,7 +104,9 @@ private enum IntegrityRepairPass {
             for book in books {
                 if MaintenanceSupport.shouldValidateLocalLibraryFile(for: book) {
                     guard let localFileURL = MaintenanceSupport.managedLibraryFileURL(for: book.localFileName, libraryURL: libraryURL) else {
-                        booksToDelete.append(book)
+                        // A name that fails validation says nothing about whether the
+                        // file exists; never delete the user's progress over it.
+                        AppLogger.app.warning("Skipped integrity check for book with unvalidated file name \(book.localFileName, privacy: .private)")
                         continue
                     }
                     switch MaintenanceSupport.fileStatus(at: localFileURL) {
@@ -247,7 +249,6 @@ private enum DeduplicationPass {
             for book in books {
                 guard MaintenanceSupport.shouldValidateLocalLibraryFile(for: book) else { continue }
                 guard let localFileURL = MaintenanceSupport.managedLibraryFileURL(for: book.localFileName, libraryURL: libraryURL) else {
-                    staleBooks.append(book)
                     continue
                 }
                 if MaintenanceSupport.fileStatus(at: localFileURL) == .missingOrInvalid,

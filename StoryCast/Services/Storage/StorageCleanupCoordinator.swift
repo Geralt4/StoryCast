@@ -16,22 +16,21 @@ enum StorageCleanupCoordinator {
     /// Managed filenames are opaque identifiers. Do not trim or normalize them:
     /// a filename containing leading or trailing whitespace is distinct on disk.
     nonisolated static func isSafeRelativePath(_ relativePath: String) -> Bool {
-        guard !relativePath.isEmpty,
-              relativePath == (relativePath as NSString).lastPathComponent,
-              relativePath != ".", relativePath != "..",
-              !relativePath.contains("/"),
-              !relativePath.unicodeScalars.contains("\u{0000}") else {
-            return false
-        }
-        // Normalize to NFKC and re-validate. This blocks Unicode normalization
-        // tricks like full-width dots (U+FF0E) that decode to "." / ".."
-        // after filesystem or URL-component normalization, which could
-        // otherwise slip past the literal "." / ".." check above.
-        let normalized = relativePath.precomposedStringWithCompatibilityMapping
-        guard normalized == relativePath else {
-            return false
-        }
-        return true
+        guard isSafeSingleComponent(relativePath) else { return false }
+        // Re-validate the NFKC form. This blocks Unicode normalization tricks
+        // like full-width dots (U+FF0E) or a full-width solidus (U+FF0F) that
+        // decode to "." / ".." / "/" after normalization. Names that merely
+        // change under NFKC (full-width punctuation, "…", "™", U+3000) are
+        // legitimate audiobook filenames and must stay valid.
+        return isSafeSingleComponent(relativePath.precomposedStringWithCompatibilityMapping)
+    }
+
+    private nonisolated static func isSafeSingleComponent(_ name: String) -> Bool {
+        !name.isEmpty &&
+            name == (name as NSString).lastPathComponent &&
+            name != "." && name != ".." &&
+            !name.contains("/") &&
+            !name.unicodeScalars.contains("\u{0000}")
     }
 
     /// Stages a file deletion in the same transaction as the model mutation that
