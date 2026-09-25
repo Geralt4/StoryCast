@@ -1,4 +1,4 @@
-# StoryCast 1.4 (build 13) — Pre-Deployment Plan
+# StoryCast 1.4 (build 14) — Pre-Deployment Plan
 
 Target: major release featuring iCloud / CloudKit sync.
 
@@ -11,7 +11,7 @@ Target: major release featuring iCloud / CloudKit sync.
 - **Privacy docs** (`docs/privacy.html`, effective July 18, 2026) already declare iCloud Sync and "Data Not Collected".
 - **Tests**: 26 test files (25 unit + 1 UI), including sync-specific coverage (`SyncFoundationTests`, `CloudSyncRecordCodecTests`, `GroupBSyncFixTests`, `GroupAConcurrencyFixTests`, `GroupDFinalFixTests`).
 - **Build tooling**: fastlane removed; direct `xcodebuild archive` + `-exportArchive` workflow with committed `ExportOptions.plist` (method `app-store-connect`, team `ZY5G2U9YN3`, automatic signing).
-- **Version alignment**: all 6 configs at `MARKETING_VERSION = 1.4`, `CURRENT_PROJECT_VERSION = 13`.
+- **Version alignment**: all 6 configs at `MARKETING_VERSION = 1.4`, `CURRENT_PROJECT_VERSION = 14`.
 - **Release notes** preserved at `release_notes/v1.4.txt`.
 
 ### Blocker-level items
@@ -32,7 +32,7 @@ Committed as `792baed` (9 files: build number, play/pause fix, preview safety, s
 `.hermes/` and `.opencode/` gitignored in `b26e4b5`.
 
 ### Phase 3 — Version bump ✅ DONE
-All 6 configs aligned to 1.4 (`9536272`), build bumped to 12 (`0d9056b`) and then 13 (`55d0524`), fastlane auto-increment disabled (`d07ff82`).
+All 6 configs aligned to 1.4 (`9536272`), build bumped to 12 (`0d9056b`), then 13 (`55d0524`) and 14 (multi-file Audiobookshelf fix), fastlane auto-increment disabled (`d07ff82`).
 
 ### Phase 3.5 — Remove fastlane ✅ DONE
 - `fastlane/` directory, `Gemfile`, `Gemfile.lock` deleted.
@@ -155,7 +155,7 @@ A GO verdict is **conditional** on CloudKit Production schema confirmation (Phas
 
 ## Decisions Locked
 - Marketing version: **1.4**
-- Build number: **13**
+- Build number: **14**
 - Extensions aligned to app marketing version (1.4)
 - Verification scope: CloudKit Production schema + app-store archive (xcodebuild) + full test suite
 - Commit style: separate commits per phase
