@@ -38,6 +38,10 @@ extension CKDatabase: CloudRecordFetching {}
 @MainActor
 final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelegate {
     static let zoneName = "StoryCastLibraryV1"
+    /// CloudKit rejects a request with more than 250 saves plus deletes
+    /// (`limitExceeded`). Changes past this cap stay pending and CKSyncEngine
+    /// asks for them in the next batch of the same send operation.
+    static let maxChangesPerBatch = 200
 
     private let modelContainer: ModelContainer
     private let cloudContainer: CKContainer
@@ -214,6 +218,7 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
             var rejectedChanges: [CKSyncEngine.PendingRecordZoneChange] = []
 
             for change in pending {
+                guard recordsToSave.count + recordIDsToDelete.count < Self.maxChangesPerBatch else { break }
                 switch change {
                 case .saveRecord(let recordID):
                     guard let operation = operations.first(where: {
