@@ -48,6 +48,8 @@ actor BackgroundRemoteCoverArtService {
     private let coverArtFetcher: CoverArtFetcher
     private let coverArtPersister: CoverArtPersister
     private var tasks: [UUID: Task<Void, Never>] = [:]
+    private var pendingRequests: [RemoteCoverArtRequest] = []
+    private var pendingContainer: ModelContainer?
 
     init(
         tokenProvider: @escaping TokenProvider = { serverURL in
@@ -66,16 +68,17 @@ actor BackgroundRemoteCoverArtService {
     }
 
     func enqueue(requests: [RemoteCoverArtRequest], container: ModelContainer) {
+        pendingContainer = container
         for request in requests {
-            guard tasks[request.bookId] == nil, tasks.count < 4 else { continue }
-
-            tasks[request.bookId] = Task(priority: .utility) {
-                await self.process(request: request, container: container)
-            }
+            guard tasks[request.bookId] == nil else { continue }
+            guard !pendingRequests.contains(where: { $0.bookId == request.bookId }) else { continue }
+            pendingRequests.append(request)
         }
+        startPendingIfNeeded(container: container)
     }
 
     func cancelTasks(for bookIds: Set<UUID>) {
+        pendingRequests.removeAll { bookIds.contains($0.bookId) }
         for bookId in bookIds {
             if let task = tasks.removeValue(forKey: bookId) {
                 task.cancel()
@@ -83,8 +86,23 @@ actor BackgroundRemoteCoverArtService {
         }
     }
 
+    private func startPendingIfNeeded(container: ModelContainer) {
+        while tasks.count < 4, !pendingRequests.isEmpty {
+            let request = pendingRequests.removeFirst()
+            guard tasks[request.bookId] == nil else { continue }
+            tasks[request.bookId] = Task(priority: .utility) {
+                await self.process(request: request, container: container)
+            }
+        }
+    }
+
     private func process(request: RemoteCoverArtRequest, container: ModelContainer) async {
-        defer { tasks.removeValue(forKey: request.bookId) }
+        defer {
+            tasks.removeValue(forKey: request.bookId)
+            if let pendingContainer {
+                startPendingIfNeeded(container: pendingContainer)
+            }
+        }
 
         var attempt = 0
         let maxAttempts = 3
@@ -141,6 +159,8 @@ actor BackgroundRemoteCoverArtService {
             task.cancel()
         }
         tasks.removeAll()
+        pendingRequests.removeAll()
+        pendingContainer = nil
     }
 #endif
 }

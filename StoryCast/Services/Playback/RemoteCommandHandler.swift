@@ -29,6 +29,7 @@ final class RemoteCommandHandler {
     
     var skipForwardSeconds: Double = 30.0
     var skipBackwardSeconds: Double = 15.0
+    private var currentPlaybackRate: Float = 1.0
     
     private init() {}
     
@@ -90,8 +91,8 @@ final class RemoteCommandHandler {
             MPMediaItemPropertyTitle: title.isEmpty ? "StoryCast" : title,
             MPMediaItemPropertyPlaybackDuration: duration,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
-            MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? currentPlaybackRate : 0.0,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: currentPlaybackRate,
             MPMediaItemPropertyMediaType: MPMediaType.audioBook.rawValue
         ]
         
@@ -110,11 +111,12 @@ final class RemoteCommandHandler {
     func updateElapsedTime(_ currentTime: Double) {
         var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? currentPlaybackRate : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
     
     func updatePlaybackRate(rate: Float, isPlaying: Bool) {
+        currentPlaybackRate = rate
         var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? rate : 0.0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info

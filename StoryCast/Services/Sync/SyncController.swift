@@ -536,8 +536,10 @@ enum SyncOutboxStore {
             $0.kindRaw == kind.rawValue &&
             $0.subjectKindRaw == subjectKind.rawValue &&
             $0.subjectID == subjectID &&
-            $0.stateRaw != "sent"
+            $0.stateRaw != "sent" && $0.stateRaw != "sending"
         }) {
+            // A "sending" operation is owned by an in-flight request; updating
+            // it or flipping it to "queued" would strand the acknowledgment.
             existing.payloadData = payloadData
             existing.dependencyData = dependencyData
             existing.stateRaw = "queued"

@@ -21,6 +21,75 @@ nonisolated final class AppStoreReleaseFixTests: XCTestCase {
         XCTAssertEqual(manager.debugDownloadCount, 0, "Download should be removed after cancellation")
     }
 
+    // MARK: - Duplicate download guard
+
+    @MainActor
+    func testDuplicateDownloadForSameBookIsRejected() async throws {
+        let manager = DownloadManager.shared
+        manager.debugResetState()
+
+        let bookId = UUID()
+        // Simulate an in-flight download (queued/downloading state).
+        manager.debugRegisterTrackedDownload(bookId: bookId)
+        XCTAssertEqual(manager.debugDownloadCount, 1)
+
+        let book = Book(
+            id: bookId,
+            title: "Remote Book",
+            localFileName: "remote.m4b",
+            duration: 100,
+            isRemote: true,
+            remoteItemId: "item-1",
+            serverId: UUID()
+        )
+        let server = ABSServer(name: "Server", url: "https://example.com", username: "tester")
+
+        do {
+            try await manager.downloadBook(book, server: server, container: makeInMemoryContainer())
+            XCTFail("Expected a duplicate download to be rejected")
+        } catch let error as DownloadManagerError {
+            guard case .downloadInProgress = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+
+        // The original in-flight download must remain intact.
+        XCTAssertEqual(manager.debugDownloadCount, 1, "The original download must not be disturbed")
+        manager.debugResetState()
+    }
+
+    @MainActor
+    func testCompletedDownloadDoesNotBlockRedownload() async throws {
+        let manager = DownloadManager.shared
+        manager.debugResetState()
+
+        let bookId = UUID()
+        // A completed download must not be treated as in-progress.
+        manager.debugRegisterTrackedDownload(bookId: bookId)
+        manager.debugMarkDownloadCompleted(bookId: bookId)
+
+        let book = Book(
+            id: bookId,
+            title: "Remote Book",
+            localFileName: "remote.m4b",
+            duration: 100,
+            isRemote: true,
+            remoteItemId: "item-1",
+            serverId: UUID()
+        )
+        let server = ABSServer(name: "Server", url: "https://example.com", username: "tester")
+
+        do {
+            try await manager.downloadBook(book, server: server, container: makeInMemoryContainer())
+            XCTFail("Expected tokenMissing (guard passed, network path reached)")
+        } catch let error as APIError {
+            guard case .tokenMissing = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        manager.debugResetState()
+    }
+
     // MARK: - B2+B3: Background completion handler storage and invocation
 
     @MainActor
@@ -57,6 +126,11 @@ nonisolated final class AppStoreReleaseFixTests: XCTestCase {
         let instance1 = RemoteLibraryService.shared
         let instance2 = RemoteLibraryService.shared
         XCTAssertTrue(instance1 === instance2, "RemoteLibraryService.shared should return the same instance")
+    }
+
+    private func makeInMemoryContainer() throws -> ModelContainer {
+        let config = ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        return try ModelContainer(for: Book.self, Chapter.self, Folder.self, ABSServer.self, SchemaV3Marker.self, configurations: config)
     }
 
     // MARK: - H4: Audio session retry logic exists

@@ -133,10 +133,15 @@ enum RemoteLibrarySyncEngine {
         }
         let descriptor = FetchDescriptor<Book>(predicate: #Predicate { $0.serverId == serverId })
         let existingBooks = try context.fetch(descriptor)
-        let existingByRemoteId = Dictionary(uniqueKeysWithValues: existingBooks.compactMap { book -> (String, Book)? in
-            guard let remoteItemId = book.remoteItemId else { return nil }
-            return (remoteItemId, book)
-        })
+        var existingByRemoteId: [String: Book] = [:]
+        for book in existingBooks {
+            guard let remoteItemId = book.remoteItemId else { continue }
+            // Duplicate remote IDs can exist because library dedup skips
+            // remote books. First-wins avoids crashing Dictionary(uniqueKeys:).
+            if existingByRemoteId[remoteItemId] == nil {
+                existingByRemoteId[remoteItemId] = book
+            }
+        }
         let unfiledFolder = try FolderService.resolveUnfiledFolder(in: context)
 
         var insertCount = 0

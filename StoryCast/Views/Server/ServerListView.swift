@@ -48,7 +48,7 @@ struct ServerListView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { server in
-            Text("This will remove \"\(server.name)\" and all its books from your library. Downloaded files will be kept.")
+            Text("This will remove \"\(server.name)\" and all its books from your library, including any downloaded audio.")
         }
         .alert("Could Not Remove Server", isPresented: $showDeletionError) {
             Button("OK", role: .cancel) {}

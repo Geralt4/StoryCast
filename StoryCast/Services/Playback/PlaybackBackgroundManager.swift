@@ -149,14 +149,21 @@ final class PlaybackBackgroundManager {
         }
         
         AppLogger.playback.info("beginBackgroundTaskIfNeeded: starting background task")
-        
-        backgroundTaskId = UIApplication.shared.beginBackgroundTask(withName: "StoryCastPlayback") { [weak self] in
-            guard let self else { return }
-            Task { @MainActor [self] in
-                AppLogger.playback.warning("Background task expired; ending task.")
-                self.endBackgroundTaskIfNeeded()
+
+        // The expiration handler can run on an arbitrary queue and must end
+        // the task before it returns, or iOS terminates the app. Capture a
+        // local identifier so we can end it synchronously without hopping
+        // to the main actor first.
+        var taskId = UIBackgroundTaskIdentifier.invalid
+        taskId = UIApplication.shared.beginBackgroundTask(withName: "StoryCastPlayback") { [weak self] in
+            AppLogger.playback.warning("Background task expired; ending task.")
+            UIApplication.shared.endBackgroundTask(taskId)
+            Task { @MainActor [weak self] in
+                guard let self, self.backgroundTaskId == taskId else { return }
+                self.backgroundTaskId = .invalid
             }
         }
+        backgroundTaskId = taskId
         
         if backgroundTaskId == .invalid {
             AppLogger.playback.warning("Failed to start background task.")

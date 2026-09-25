@@ -27,6 +27,12 @@ protocol CloudSyncTransport: AnyObject {
     func cancel() async
 }
 
+protocol CloudRecordFetching: AnyObject {
+    func record(for recordID: CKRecord.ID) async throws -> CKRecord
+}
+
+extension CKDatabase: CloudRecordFetching {}
+
 /// Explicit CloudKit transport for the local synchronization journal. The
 /// SwiftData store stays local-only; this object is the sole CloudKit boundary.
 @MainActor
@@ -37,10 +43,12 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
     private let cloudContainer: CKContainer
     private let zoneID: CKRecordZone.ID
     private var engine: CKSyncEngine!
+    var recordFetcher: any CloudRecordFetching
 
     init(modelContainer: ModelContainer) throws {
         self.modelContainer = modelContainer
         self.cloudContainer = CKContainer(identifier: CloudSyncDefaults.containerIdentifier)
+        self.recordFetcher = cloudContainer.privateCloudDatabase
         self.zoneID = CKRecordZone.ID(zoneName: Self.zoneName)
         super.init()
 
@@ -162,19 +170,26 @@ final class CloudKitSyncEngine: NSObject, CloudSyncTransport, CKSyncEngineDelega
         }
     }
 
-    private func retryUnstagedInboxAssets() async throws {
+    func retryUnstagedInboxAssets() async throws {
         let recordNames = SyncInboxApplier.retryableUnstagedAssetRecordNames(container: modelContainer)
         guard !recordNames.isEmpty else { return }
 
         for recordName in recordNames {
             let recordID = CKRecord.ID(recordName: recordName, zoneID: zoneID)
             do {
-                let record = try await cloudContainer.privateCloudDatabase.record(for: recordID)
+                let record = try await recordFetcher.record(for: recordID)
                 try await SyncInboxApplier.stage(
                     record: record,
                     container: modelContainer,
                     drainAfterStaging: false
                 )
+            } catch let error as CKError where error.code == .unknownItem {
+                do {
+                    try SyncInboxApplier.discardMissingCloudRecord(named: recordName, container: modelContainer)
+                } catch {
+                    recordSyncError(error.localizedDescription)
+                }
+                AppLogger.sync.info("Discarded inbox asset \(recordName, privacy: .private) whose CloudKit record was deleted")
             } catch {
                 recordSyncError(error.localizedDescription)
                 AppLogger.sync.error("Failed to retry inbox asset \(recordName, privacy: .private): \(error.localizedDescription, privacy: .private)")

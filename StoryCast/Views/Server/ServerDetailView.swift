@@ -98,7 +98,12 @@ struct ServerDetailView: View {
 
         let tokenValid = await remoteLibrary.activateServer(server, container: modelContext.container)
         if !tokenValid {
-            needsLogin = true
+            // activateServer also returns false when a newer activation
+            // superseded this one. Only prompt for login when this server
+            // is still the active target.
+            if remoteLibrary.activeServer?.id == server.id || remoteLibrary.activeServer == nil {
+                needsLogin = true
+            }
             return
         }
         await remoteLibrary.fetchLibraries()

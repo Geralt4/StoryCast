@@ -177,6 +177,18 @@ enum SyncInboxApplier {
         StorageCleanupCoordinator.drainPendingCleanup(in: context)
     }
 
+    /// Drops a pending inbox row whose CloudKit record no longer exists so a
+    /// pruned record cannot fail every future sync.
+    static func discardMissingCloudRecord(named recordName: String, container: ModelContainer) throws {
+        let context = ModelContext(container)
+        for inbox in try context.fetch(FetchDescriptor<SyncInboxRecord>()) where inbox.id == recordName {
+            context.delete(inbox)
+        }
+        try clearRetryState(for: recordName, in: context)
+        try context.save()
+        StorageCleanupCoordinator.drainPendingCleanup(in: context)
+    }
+
     static func retryableUnstagedAssetRecordNames(container: ModelContainer) -> [String] {
         let context = ModelContext(container)
         let inboxes: [SyncInboxRecord]

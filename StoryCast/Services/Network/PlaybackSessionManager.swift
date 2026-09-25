@@ -54,13 +54,15 @@ final class PlaybackSessionManager: ObservableObject {
         #if canImport(UIKit)
         let center = NotificationCenter.default
         lifecycleObservers.append(center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [self] in self?.handleAppDidEnterBackground() }
+            MainActor.assumeIsolated { self?.handleAppDidEnterBackground() }
         })
         lifecycleObservers.append(center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [self] in self?.handleAppWillEnterForeground() }
+            MainActor.assumeIsolated { self?.handleAppWillEnterForeground() }
         })
         lifecycleObservers.append(center.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [self] in self?.handleAppWillTerminate() }
+            // Must start the background task before this handler returns or
+            // the process can be killed before the deferred Task ever runs.
+            MainActor.assumeIsolated { self?.handleAppWillTerminate() }
         })
         #endif
         
@@ -324,11 +326,14 @@ private extension PlaybackSessionManager {
             activeBackgroundTaskID = .invalid
         }
         
-        let taskID = UIApplication.shared.beginBackgroundTask(withName: taskName) { [weak self] in
-            // Expiration handler — must end the task to avoid forced termination
+        var taskID = UIBackgroundTaskIdentifier.invalid
+        taskID = UIApplication.shared.beginBackgroundTask(withName: taskName) { [weak self] in
+            // Expiration can run on an arbitrary queue and must end the task
+            // before returning, or iOS terminates the app.
             AppLogger.sync.warning("Background task \(taskName) expired")
-            if let self, self.activeBackgroundTaskID != .invalid {
-                UIApplication.shared.endBackgroundTask(self.activeBackgroundTaskID)
+            UIApplication.shared.endBackgroundTask(taskID)
+            Task { @MainActor [weak self] in
+                guard let self, self.activeBackgroundTaskID == taskID else { return }
                 self.activeBackgroundTaskID = .invalid
             }
         }

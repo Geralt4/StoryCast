@@ -104,8 +104,10 @@ final class AudioSessionManager {
     func handleInterruption(type: AVAudioSession.InterruptionType, options: AVAudioSession.InterruptionOptions) {
         switch type {
         case .began:
+            isAudioSessionActive = false
             delegate?.audioSessionInterruptionBegan()
         case .ended:
+            guard options.contains(.shouldResume) else { return }
             delegate?.audioSessionInterruptionEnded()
         @unknown default:
             break
@@ -124,9 +126,12 @@ final class AudioSessionManager {
         ) { [weak self] notification in
             guard let userInfo = notification.userInfo,
                   let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-            
-            guard let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+            // Interruption-began notifications typically omit the options key.
+            // Requiring it dropped the began event, so playback never paused
+            // or recorded wasPlayingBeforeInterruption.
+            let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
             
             Task { @MainActor [weak self] in

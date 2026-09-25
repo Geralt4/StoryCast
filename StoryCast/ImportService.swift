@@ -47,16 +47,17 @@ final class ImportService: ObservableObject {
     }
 
     func importFiles(urls: [URL], container: ModelContainer) async {
-        await importFilesToFolder(urls: urls, folderId: nil, container: container)
+        _ = await importFilesToFolder(urls: urls, folderId: nil, container: container)
     }
 
-    func importFilesToFolder(urls: [URL], folderId: UUID?, container: ModelContainer) async {
+    @discardableResult
+    func importFilesToFolder(urls: [URL], folderId: UUID?, container: ModelContainer) async -> Bool {
         let requestID = UUID()
 
         do {
             try await operationGate.acquire(requestID: requestID)
         } catch {
-            return
+            return false
         }
 
         let task = Task<Void, Never> { @MainActor [weak self] in
@@ -110,6 +111,7 @@ final class ImportService: ObservableObject {
         if activeImportTask == task {
             activeImportTask = nil
         }
+        return true
     }
 
     func cancelImport() {
@@ -126,7 +128,8 @@ final class ImportService: ObservableObject {
     }
 
     func importFile(url: URL, container: ModelContainer) async throws {
-        await importFilesToFolder(urls: [url], folderId: nil, container: container)
+        let didRun = await importFilesToFolder(urls: [url], folderId: nil, container: container)
+        guard didRun else { return }
 
         if let error = importErrors.first {
             throw error.error

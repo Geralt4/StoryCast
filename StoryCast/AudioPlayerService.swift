@@ -124,11 +124,15 @@ class AudioPlayerService: ObservableObject {
                             self.pendingSeekTime = nil
                         }
                         self.playerItemObserver = nil
-                    case .failed, .unknown:
+                    case .failed:
                         self.pendingSeekTime = nil
                         self.playerItemObserver = nil
+                    case .unknown:
+                        // `.initial` fires with `.unknown` for a newly created item.
+                        // Keep waiting for ready/failed so resume seeks are not dropped.
+                        break
                     @unknown default:
-                        self.playerItemObserver = nil
+                        break
                     }
                 }
             }
