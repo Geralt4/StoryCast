@@ -38,6 +38,9 @@ final class PlayerViewModel {
     private var debouncedSaveTask: Task<Void, Never>?
     private var periodicSaveTimer: Timer?
     private var lastSavedPosition: Double = -1.0
+    /// Set when a downloaded copy turned out to be unusable, so the book
+    /// streams instead for the rest of this screen's life.
+    private var streamingFallback = false
     /// The book's saved position when this view model last loaded it; a source
     /// that may hold only part of the book never saves an end position below it.
     private var positionAtLoad: Double = 0
@@ -102,20 +105,15 @@ final class PlayerViewModel {
         skipSymbolName(for: skipForwardSeconds, baseName: "goforward")
     }
 
+    /// The local audio for this book: the imported file, a downloaded book's
+    /// folder, or an older single-file download. Nil means the book streams.
     var bookAudioURL: URL? {
         if book.isRemote {
-            if book.isDownloaded,
-               let cachePath = book.localCachePath,
-               StorageCleanupCoordinator.isSafeRelativePath(cachePath) {
-                let url = StorageManager.shared.remoteAudioCacheURL(for: cachePath)
-                // Cross-device guard: `isDownloaded` is synced via CloudKit, but
-                // the actual cached file is per-device. If the file isn't
-                // actually present on this device, fall back to streaming.
-                if FileManager.default.fileExists(atPath: url.path) {
-                    return url
-                }
-            }
-            return nil
+            guard !streamingFallback, book.isDownloaded, let cachePath = book.localCachePath else { return nil }
+            return RemoteDownloadLayout.quickIdentityURL(
+                localCachePath: cachePath,
+                cacheRoot: StorageManager.shared.remoteAudioCacheDirectoryURL
+            )
         }
         guard StorageCleanupCoordinator.isSafeRelativePath(book.localFileName) else { return nil }
         let root = StorageManager.shared.storyCastLibraryURL.standardizedFileURL
@@ -163,26 +161,7 @@ final class PlayerViewModel {
                 // device (either never downloaded, or `isDownloaded` was synced
                 // from another device but the cached file isn't here yet), start
                 // a streaming session.
-                remotePlaybackTask = Task { @MainActor in
-                    do {
-                        let start = try await startRemotePlaybackSession()
-                        guard !Task.isCancelled else { return }
-                        importServerChapters(start.chapters, source: start.source)
-                        audioPlayer.load(source: start.source, title: book.title, seekTo: start.resumePosition)
-                    } catch APIError.noActiveServer {
-                        showRemoteServerError = true
-                        remoteServerErrorMessage = "Server not found. Please check your Audiobookshelf server configuration."
-                    } catch APIError.tokenMissing {
-                        showRemoteServerError = true
-                        remoteServerErrorMessage = "Authentication failed. Please log in to your Audiobookshelf server again."
-                    } catch APIError.serverUnreachable {
-                        showRemoteServerError = true
-                        remoteServerErrorMessage = "Server is unreachable. Please check your network connection and try again."
-                    } catch {
-                        showRemoteServerError = true
-                        remoteServerErrorMessage = error.localizedDescription
-                    }
-                }
+                startStreaming()
             } else {
                 // audioURL is always non-nil for local books
                 guard let localAudioURL = audioURL else { return }
@@ -469,6 +448,30 @@ final class PlayerViewModel {
         }
     }
 
+    private func startStreaming() {
+        remotePlaybackTask?.cancel()
+        remotePlaybackTask = Task { @MainActor in
+            do {
+                let start = try await startRemotePlaybackSession()
+                guard !Task.isCancelled else { return }
+                importServerChapters(start.chapters, source: start.source)
+                audioPlayer.load(source: start.source, title: book.title, seekTo: start.resumePosition)
+            } catch APIError.noActiveServer {
+                showRemoteServerError = true
+                remoteServerErrorMessage = "Server not found. Please check your Audiobookshelf server configuration."
+            } catch APIError.tokenMissing {
+                showRemoteServerError = true
+                remoteServerErrorMessage = "Authentication failed. Please log in to your Audiobookshelf server again."
+            } catch APIError.serverUnreachable {
+                showRemoteServerError = true
+                remoteServerErrorMessage = "Server is unreachable. Please check your network connection and try again."
+            } catch {
+                showRemoteServerError = true
+                remoteServerErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
     private func startRemotePlaybackSession() async throws -> RemotePlaybackStart {
         guard let server = fetchServer(for: book.serverId) else {
             throw APIError.noActiveServer
@@ -476,25 +479,68 @@ final class PlayerViewModel {
         return try await sessionManager.startSession(for: book, server: server)
     }
 
-    private func loadLocalAudio(_ localAudioURL: URL) async {
-        let fileExists = await Task.detached(priority: .utility) {
-            FileManager.default.fileExists(atPath: localAudioURL.path)
+    private enum LocalPlayback: Sendable {
+        case ready(PlaybackSource, chapters: [ABSChapter])
+        case missing
+        /// A downloaded copy that is structurally broken and should be dropped.
+        case brokenDownload(String)
+        /// A downloaded copy that couldn't be read right now (for example while
+        /// the device is locked); it is kept but not used this time.
+        case unreadableDownload(String)
+    }
+
+    /// Validates the book's local audio off the main thread.
+    private func resolveLocalPlayback(_ localAudioURL: URL) async -> LocalPlayback {
+        let bookID = book.id
+        let duration = safeDuration
+        guard book.isRemote, let cachePath = book.localCachePath else {
+            let exists = await Task.detached(priority: .userInitiated) {
+                FileManager.default.fileExists(atPath: localAudioURL.path)
+            }.value
+            return exists ? .ready(.singleFile(url: localAudioURL, duration: duration, bookID: bookID), chapters: []) : .missing
+        }
+
+        let cacheRoot = StorageManager.shared.remoteAudioCacheDirectoryURL
+        let resolution = await Task.detached(priority: .userInitiated) {
+            RemoteDownloadLayout.resolve(localCachePath: cachePath, cacheRoot: cacheRoot, expectedBookID: bookID)
         }.value
+        switch resolution {
+        case .legacyFile(let url):
+            return .ready(.singleFile(url: url, duration: duration, bookID: bookID), chapters: [])
+        case .folder(let folderURL, let manifest):
+            guard let source = manifest.playbackSource(folderURL: folderURL) else {
+                return .brokenDownload("manifest has no playable tracks")
+            }
+            return .ready(source, chapters: manifest.absChapters)
+        case .missing:
+            return .brokenDownload("downloaded files are missing")
+        case .invalid(let reason):
+            return .brokenDownload(reason)
+        case .unreadable(let reason):
+            return .unreadableDownload(reason)
+        }
+    }
+
+    private func loadLocalAudio(_ localAudioURL: URL) async {
+        let playback = await resolveLocalPlayback(localAudioURL)
+        guard !Task.isCancelled else { return }
         guard !(audioPlayer.currentBookID == book.id && audioPlayer.currentSource?.isLocal == true) else { return }
-        if fileExists {
+
+        switch playback {
+        case .ready(let source, let chapters):
             // Local playback does not use an Audiobookshelf session. Close any
             // leftover remote session so progress sync does not keep targeting
             // the previous stream after the user switches books.
             if sessionManager.activeRemoteItemId != nil {
                 await sessionManager.closeCurrentSession()
+                guard !Task.isCancelled else { return }
+            }
+            if !chapters.isEmpty {
+                importServerChapters(chapters, source: source)
             }
             let backupPosition = restorePositionFromUserDefaults()
             let startPosition = backupPosition ?? book.lastPlaybackPosition
-            audioPlayer.load(
-                source: .singleFile(url: localAudioURL, duration: safeDuration, bookID: book.id),
-                title: book.title,
-                seekTo: startPosition
-            )
+            audioPlayer.load(source: source, title: book.title, seekTo: startPosition)
 
             // If we restored from backup, also update the book's position
             if let backupPosition = backupPosition {
@@ -506,8 +552,32 @@ final class PlayerViewModel {
                     AppLogger.playback.error("Failed to restore backup position: \(error.localizedDescription, privacy: .private)")
                 }
             }
-        } else {
+        case .missing:
             showMissingFileAlert = true
+        case .brokenDownload(let reason):
+            AppLogger.playback.error("Discarding broken download for book \(self.book.id, privacy: .private): \(reason, privacy: .public)")
+            discardBrokenDownload()
+            streamingFallback = true
+            startStreaming()
+        case .unreadableDownload(let reason):
+            AppLogger.playback.warning("Downloaded copy unreadable, streaming instead: \(reason, privacy: .private)")
+            streamingFallback = true
+            startStreaming()
+        }
+    }
+
+    /// Marks the book as not downloaded and queues its files for cleanup.
+    private func discardBrokenDownload() {
+        guard let modelContext, let cachePath = book.localCachePath else { return }
+        do {
+            _ = try StorageCleanupCoordinator.stage(location: .remoteAudioCache, relativePath: cachePath, in: modelContext)
+            book.isDownloaded = false
+            book.localCachePath = nil
+            try modelContext.save()
+            StorageCleanupCoordinator.drainPendingCleanup(in: modelContext)
+        } catch {
+            modelContext.rollback()
+            AppLogger.storage.error("Failed to discard broken download: \(error.localizedDescription, privacy: .private)")
         }
     }
 

@@ -165,7 +165,16 @@ enum StorageCleanupCoordinator {
 
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
-            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            let type = attributes[.type] as? FileAttributeType
+            if type == .typeDirectory,
+               location == .remoteAudioCache,
+               RemoteDownloadLayout.isDownloadFolderName(entry.relativePath) {
+                // A downloaded multi-file book. Only folders named exactly
+                // `<UUID>_remote` in the remote cache are ever removed.
+                try RemoteDownloadLayout.trashFolder(at: fileURL)
+                return .removed
+            }
+            guard type == .typeRegular else {
                 return .discard("target is not a regular file")
             }
             try removeFileAtURL(fileURL)

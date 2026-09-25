@@ -92,6 +92,37 @@ actor StorageManager {
         remoteAudioCacheDirectoryURL.appendingPathComponent(fileName)
     }
 
+    /// The only place download folder URLs are built, so their trailing slash
+    /// is always consistent when URLs are compared.
+    nonisolated func remoteDownloadFolderURL(named name: String) -> URL {
+        RemoteDownloadLayout.folderURL(named: name, cacheRoot: remoteAudioCacheDirectoryURL)
+    }
+
+    /// Partially downloaded books live here until every file has arrived.
+    nonisolated var downloadStagingDirectoryURL: URL {
+        applicationSupportDirectoryURL.appendingPathComponent("StoryCast/DownloadStaging", isDirectory: true)
+    }
+
+    /// Protects a downloaded book folder like the rest of the cache and keeps
+    /// it out of iCloud device backups, since it can be downloaded again.
+    nonisolated static func applyDownloadFolderAttributes(to folderURL: URL) throws {
+        let fileManager = FileManager.default
+        #if os(iOS)
+        try fileManager.setAttributes(fileProtectionAttributes, ofItemAtPath: folderURL.path)
+        for fileURL in try fileManager.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: nil) {
+            try fileManager.setAttributes(fileProtectionAttributes, ofItemAtPath: fileURL.path)
+        }
+        #endif
+        try excludeFromBackup(folderURL)
+    }
+
+    nonisolated static func excludeFromBackup(_ url: URL) throws {
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutableURL = url
+        try mutableURL.setResourceValues(values)
+    }
+
     nonisolated func resolvedRemoteAudioCacheURL(for fileName: String) -> URL {
         let preferredURL = remoteAudioCacheURL(for: fileName)
         if FileManager.default.fileExists(atPath: preferredURL.path) {
@@ -138,6 +169,17 @@ actor StorageManager {
 
     func setupRemoteAudioCacheDirectory() throws {
         try ensureDirectoryExists(for: .remoteAudioCache)
+        // Downloads can be fetched again, so keep them out of device backups.
+        try Self.excludeFromBackup(remoteAudioCacheDirectoryURL)
+    }
+
+    func setupDownloadStagingDirectory() throws {
+        let url = downloadStagingDirectoryURL
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        #if os(iOS)
+        try FileManager.default.setAttributes(Self.fileProtectionAttributes, ofItemAtPath: url.path)
+        #endif
+        try Self.excludeFromBackup(url)
     }
 
     func setupRemoteCoverArtDirectory() throws {
@@ -170,17 +212,6 @@ actor StorageManager {
         // legitimately belong to a book in the other library namespace.
         let directoryURL = isRemote ? remoteCoverArtDirectoryURL : coverArtDirectoryURL
         removeFiles(at: [directoryURL.appendingPathComponent(fileName)], errorMessage: "Error deleting cover art")
-    }
-
-    func deleteRemoteAudioCache(fileName: String) {
-        guard isSafeManagedFileName(fileName) else {
-            AppLogger.storage.warning("Skipped unsafe remote audio deletion path: \(fileName)")
-            return
-        }
-
-        // Local imported audio may share the old fallback filename, so only the
-        // remote cache owns this direct-deletion operation.
-        removeFiles(at: [remoteAudioCacheURL(for: fileName)])
     }
 
     func copyFileToStoryCastLibraryDirectory(from sourceURL: URL, withName name: String) throws -> URL {
@@ -555,6 +586,16 @@ actor StorageManager {
             kSecAttrAccount as String: "current"
         ] as CFDictionary)
         
+        for url in [downloadStagingDirectoryURL, RemoteDownloadLayout.trashDirectoryURL]
+        where fileManager.fileExists(atPath: url.path) {
+            do {
+                try fileManager.removeItem(at: url)
+            } catch {
+                AppLogger.storage.error("Failed to delete \(url.lastPathComponent): \(error.localizedDescription, privacy: .private)")
+                failedDeletions.append(url.lastPathComponent)
+            }
+        }
+
         for directory in ManagedDirectory.allCases {
             let url = directoryURL(for: directory)
             if fileManager.fileExists(atPath: url.path) {
