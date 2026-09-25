@@ -98,11 +98,24 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
             downloads[bookId]?.status = .downloading
             task.resume()
             AppLogger.sync.info("Download started for book \(bookId, privacy: .private)")
+            // Stall timeout, not a total-duration limit: large audiobooks on a
+            // slow uplink legitimately take longer than one interval. The task's
+            // byte count is maintained by the system, so progress made by the
+            // background session while the app was suspended still counts.
             let timeoutTask = Task {
-                try? await Task.sleep(nanoseconds: UInt64(ImportDefaults.downloadTimeout * 1_000_000_000))
-                guard !Task.isCancelled else { return }
-                if !resumedContinuations.contains(bookId), timeoutTasks[bookId] != nil {
-                    failDownload(bookId: bookId, error: APIError.serverUnreachable)
+                var lastBytesReceived: Int64 = 0
+                while true {
+                    try? await Task.sleep(nanoseconds: UInt64(ImportDefaults.downloadStallTimeout * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
+                    let bytesReceived = task.countOfBytesReceived
+                    if bytesReceived > lastBytesReceived {
+                        lastBytesReceived = bytesReceived
+                        continue
+                    }
+                    if !resumedContinuations.contains(bookId), timeoutTasks[bookId] != nil {
+                        failDownload(bookId: bookId, error: APIError.serverUnreachable)
+                    }
+                    return
                 }
             }
             registerTimeoutTask(timeoutTask, for: bookId)
