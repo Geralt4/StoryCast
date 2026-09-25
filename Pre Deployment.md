@@ -1,4 +1,4 @@
-# StoryCast 1.4 (build 12) — Pre-Deployment Plan
+# StoryCast 1.4 (build 13) — Pre-Deployment Plan
 
 Target: major release featuring iCloud / CloudKit sync.
 
@@ -11,12 +11,12 @@ Target: major release featuring iCloud / CloudKit sync.
 - **Privacy docs** (`docs/privacy.html`, effective July 18, 2026) already declare iCloud Sync and "Data Not Collected".
 - **Tests**: 26 test files (25 unit + 1 UI), including sync-specific coverage (`SyncFoundationTests`, `CloudSyncRecordCodecTests`, `GroupBSyncFixTests`, `GroupAConcurrencyFixTests`, `GroupDFinalFixTests`).
 - **Build tooling**: fastlane removed; direct `xcodebuild archive` + `-exportArchive` workflow with committed `ExportOptions.plist` (method `app-store-connect`, team `ZY5G2U9YN3`, automatic signing).
-- **Version alignment**: all 6 configs at `MARKETING_VERSION = 1.4`, `CURRENT_PROJECT_VERSION = 12`.
+- **Version alignment**: all 6 configs at `MARKETING_VERSION = 1.4`, `CURRENT_PROJECT_VERSION = 13`.
 - **Release notes** preserved at `release_notes/v1.4.txt`.
 
 ### Blocker-level items
-1. **CloudKit Production schema deployment** — must be verified (Phase 4). Development-only schema breaks sync for App Store users. ← **MANDATORY READINESS GATE**
-2. **CloudKit Dashboard confirmation** — user must visually confirm the 7 record types in Production (Phase 4 step 2); not verifiable from CLI.
+1. ~~**CloudKit Production schema deployment**~~ ✅ Verified Sep 25, 2026 (Phase 4).
+2. ~~**CloudKit Dashboard confirmation**~~ ✅ User confirmed all 7 record types in Production on Sep 25, 2026.
 
 ### Minor (non-blocking)
 - `SyncLocalMutation` is a registered SwiftData model with no apparent read/write references — possibly vestigial. Harmless; clean up later if desired.
@@ -32,7 +32,7 @@ Committed as `792baed` (9 files: build number, play/pause fix, preview safety, s
 `.hermes/` and `.opencode/` gitignored in `b26e4b5`.
 
 ### Phase 3 — Version bump ✅ DONE
-All 6 configs aligned to 1.4 (`9536272`), build bumped to 12 (`0d9056b`), fastlane auto-increment disabled (`d07ff82`).
+All 6 configs aligned to 1.4 (`9536272`), build bumped to 12 (`0d9056b`) and then 13 (`55d0524`), fastlane auto-increment disabled (`d07ff82`).
 
 ### Phase 3.5 — Remove fastlane ✅ DONE
 - `fastlane/` directory, `Gemfile`, `Gemfile.lock` deleted.
@@ -40,10 +40,12 @@ All 6 configs aligned to 1.4 (`9536272`), build bumped to 12 (`0d9056b`), fastla
 - Release notes preserved at `release_notes/v1.4.txt`.
 - `ExportOptions.plist` committed at repo root for xcodebuild export.
 
-### Phase 4 — CloudKit Production Environment Verification
+### Phase 4 — CloudKit Production Environment Verification ✅ DONE
 **Objective:** Confirm the CloudKit schema (record types and indexes) is deployed to Production.
 
-> **STATUS (Aug 15, 2026): NOT DEPLOYED — both the Development and Production environments currently show only the built-in `Users` record type (user-confirmed in the CloudKit Console). The 7 `SC*V1` record types are absent from both. This is the mandatory go-live gate.** Deployment plan: `docs/cloudkit-production-deployment.md`. Source schema file: `cloudkit-schema.ckdb` (committed alongside this plan). Path: materialize via `xcrun cktool import-schema` into Development, then `Deploy Schema Changes…` from Development to Production.
+> **STATUS (Sep 25, 2026): DEPLOYED.** The CloudKit Console shows all 7 `SC*V1` record types in both Development and Production (each with the 6 system fields plus `schemaVersion`, `payload`, `updatedAt`; `SCAssetV1` also has `asset`), and Deploy Schema Changes reports 0 pending changes.
+>
+> ~~**STATUS (Aug 15, 2026): NOT DEPLOYED — both the Development and Production environments currently show only the built-in `Users` record type (user-confirmed in the CloudKit Console). The 7 `SC*V1` record types are absent from both. This is the mandatory go-live gate.**~~ Deployment plan: `docs/cloudkit-production-deployment.md`. Source schema file: `cloudkit-schema.ckdb` (committed alongside this plan). Path: materialize via `xcrun cktool import-schema` into Development, then `Deploy Schema Changes…` from Development to Production.
 
 **Critical:** Development environment data does not carry to Production. If the schema exists only in Development, App Store users will encounter `CKError.unknownItem` on first sync attempt.
 
@@ -153,7 +155,7 @@ A GO verdict is **conditional** on CloudKit Production schema confirmation (Phas
 
 ## Decisions Locked
 - Marketing version: **1.4**
-- Build number: **12**
+- Build number: **13**
 - Extensions aligned to app marketing version (1.4)
 - Verification scope: CloudKit Production schema + app-store archive (xcodebuild) + full test suite
 - Commit style: separate commits per phase

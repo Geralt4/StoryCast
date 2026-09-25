@@ -1,8 +1,10 @@
 # CloudKit Production Schema Deployment
 
-**Status (Aug 15, 2026):** The CloudKit container `iCloud.IoannisManologlou.StoryCast` has **no record types deployed to either environment** (confirmed in the CloudKit Console — both Development and Production show only the built-in `Users` type). This is the mandatory go-live gate from `Pre Deployment.md` Phase 4: without it, every App Store user's first sync fails with `CKError.unknownItem`.
+**Status (Sep 25, 2026): Deployed.** All 7 record types are present in Development and Production (confirmed in the CloudKit Console; Deploy Schema Changes shows 0 pending changes). The steps below are kept for reference and for future schema additions.
 
-The shipped IPA is signed with `com.apple.developer.icloud-container-environment = Production`, so App Store builds talk to the Production environment directly.
+~~**Status (Aug 15, 2026):** The CloudKit container `iCloud.IoannisManologlou.StoryCast` has **no record types deployed to either environment** (confirmed in the CloudKit Console — both Development and Production show only the built-in `Users` type). This is the mandatory go-live gate from `Pre Deployment.md` Phase 4: without it, every App Store user's first sync fails with `CKError.unknownItem`.~~
+
+App Store builds are signed with `com.apple.developer.icloud-container-environment = Production`, so App Store builds talk to the Production environment directly.
 
 ## The exact schema StoryCast needs
 
@@ -99,5 +101,5 @@ xcrun cktool export-schema \
 
 - Release gate satisfied → the GO verdict becomes unconditional (tests ✅, signing ✅, schema ✅).
 - The `StoryCastLibraryV1` zone still will not exist in Production until the first real user syncs — expected and harmless.
-- No code or build changes are required; the existing `build/StoryCast.ipa` is already correct.
+- No code changes are required for the schema. Ship a fresh archive of the current `main` (1.4 build 13); `build/StoryCast.ipa` is an old 1.3 (build 10) artifact and must not be uploaded.
 - Production record types cannot be deleted or renamed once promoted — only fields can be added. Plan future schema additions with this constraint in mind.
