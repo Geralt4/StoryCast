@@ -20,12 +20,14 @@ struct ContentView: View {
                 StorageVersionMismatchView(error: error)
             case .unrecoverable(let error):
                 FatalErrorView(error: error, onReset: {
+                    DownloadManager.shared.cancelAllDownloads()
                     await StorageManager.shared.resetAllData(container: modelContext.container)
                 })
             }
         }
         .task {
             guard storageBootstrapState.allowsLibraryAccess else { return }
+            DownloadFailurePresenter.shared.start()
             await startupCoordinator.startIfNeeded(container: modelContext.container)
         }
         .onOpenURL { url in

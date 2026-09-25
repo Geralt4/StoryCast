@@ -294,6 +294,19 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
     }
 
     func cancelDownloads(for bookIds: Set<UUID>) { for bookId in bookIds { cancelDownload(bookId: bookId) } }
+
+    /// Stops every download, including tasks not reattached yet, e.g. before
+    /// all app data is reset.
+    func cancelAllDownloads() {
+        cancelDownloads(for: Set(activeTasks.keys).union(downloads.keys))
+        guard let session else { return }
+        Task { @MainActor [weak self] in
+            for task in await session.allTasks {
+                self?.recordCancel(task, reason: .user)
+                task.cancel()
+            }
+        }
+    }
     func progress(for bookId: UUID) -> Double? { downloads[bookId]?.progress }
 
     /// Removes a failed book's partially downloaded files.

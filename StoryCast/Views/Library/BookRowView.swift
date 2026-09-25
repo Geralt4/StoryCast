@@ -53,7 +53,7 @@ struct BookRowView: View, Equatable {
             .contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(book.title)
-            .accessibilityValue(accessibilityValue)
+            .modifier(BookDownloadAccessibility(book: book, baseValue: accessibilityValue, onDownload: onDownload))
             .accessibilityHint(accessibilityHint)
             .accessibilityAction(named: Text(isEditing ? (isSelected ? "Deselect" : "Select") : "Select")) {
                 onSelect()
@@ -80,21 +80,7 @@ struct BookRowView: View, Equatable {
                 
                 // Remote book actions
                 if book.isRemote {
-                    if book.isDownloaded {
-                        Button(action: {
-                            HapticManager.impact(.light)
-                            onRemoveDownload()
-                        }) {
-                            Label("Remove Download", systemImage: "icloud.and.arrow.down")
-                        }
-                    } else {
-                        Button(action: {
-                            HapticManager.impact(.light)
-                            onDownload()
-                        }) {
-                            Label("Download for Offline", systemImage: "icloud.and.arrow.down")
-                        }
-                    }
+                    BookDownloadMenuItems(book: book, onDownload: onDownload, onRemoveDownload: onRemoveDownload)
                 }
                 
                 Button(role: .destructive, action: {
@@ -134,10 +120,7 @@ struct BookRowView: View, Equatable {
                     .font(.headline)
                 if book.isRemote {
                     Spacer()
-                    Image(systemName: book.isDownloaded ? "icloud.and.arrow.down.fill" : "icloud")
-                        .foregroundColor(book.isDownloaded ? .green : .secondary)
-                        .font(.caption)
-                        .accessibilityLabel(book.isDownloaded ? "Downloaded for offline" : "Remote book")
+                    BookDownloadIndicator(book: book)
                 }
             }
             Text(formatDuration(book.duration))

@@ -154,7 +154,11 @@ private struct RemoteBookRowNavigator: View {
                 }
 
                 HStack(spacing: LayoutDefaults.smallSpacing) {
-                    BookSourceBadge(isDownloaded: book?.isDownloaded ?? false)
+                    if let book {
+                        BookDownloadIndicator(book: book)
+                    } else {
+                        BookSourceBadge(isDownloaded: false)
+                    }
                     Text(formatDuration(item.duration))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -215,23 +219,6 @@ private struct CoverArtThumbnail: View {
                             .foregroundStyle(.secondary)
                     }
             }
-        }
-    }
-}
-
-// MARK: - Circular Progress
-
-private struct CircularProgressView: View {
-    let progress: Double
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(Color.secondary.opacity(0.2), lineWidth: 3)
-            Circle()
-                .trim(from: 0, to: min(progress, 1))
-                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                .rotationEffect(.degrees(-90))
         }
     }
 }
