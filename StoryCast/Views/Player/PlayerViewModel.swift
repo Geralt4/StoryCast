@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import SwiftUI
 import SwiftData
@@ -487,6 +488,9 @@ final class PlayerViewModel {
         /// A downloaded copy that couldn't be read right now (for example while
         /// the device is locked); it is kept but not used this time.
         case unreadableDownload(String)
+        /// An older single-file download that ends before the saved position,
+        /// so it holds only part of the book.
+        case incompleteDownload
     }
 
     /// Validates the book's local audio off the main thread.
@@ -506,7 +510,22 @@ final class PlayerViewModel {
         }.value
         switch resolution {
         case .legacyFile(let url):
-            return .ready(.singleFile(url: url, duration: duration, bookID: bookID), chapters: [])
+            // Older versions saved only the first file of a multi-file book.
+            // Until the server confirms the book is one file, treat the copy as
+            // possibly partial: it never marks the book finished or reports
+            // progress, and it isn't used if it ends before the saved position.
+            let isVerified = LegacyRemoteDownloadValidator.isVerified(bookID: bookID, cachePath: cachePath)
+            if !isVerified {
+                let fileDuration = await Task.detached(priority: .userInitiated) { () -> Double? in
+                    guard let loaded = try? await AVURLAsset(url: url).load(.duration) else { return nil }
+                    return loaded.seconds.isFinite ? loaded.seconds : nil
+                }.value
+                let resumePosition = restorePositionFromUserDefaults() ?? book.lastPlaybackPosition
+                if let fileDuration, resumePosition > fileDuration + 5 {
+                    return .incompleteDownload
+                }
+            }
+            return .ready(.singleFile(url: url, duration: duration, bookID: bookID, coversWholeBook: isVerified), chapters: [])
         case .folder(let folderURL, let manifest):
             guard let source = manifest.playbackSource(folderURL: folderURL) else {
                 return .brokenDownload("manifest has no playable tracks")
@@ -563,6 +582,15 @@ final class PlayerViewModel {
             AppLogger.playback.warning("Downloaded copy unreadable, streaming instead: \(reason, privacy: .private)")
             streamingFallback = true
             startStreaming()
+        case .incompleteDownload:
+            if NetworkMonitor.shared.isConnected {
+                AppLogger.playback.info("Older download ends before the saved position; streaming instead")
+                streamingFallback = true
+                startStreaming()
+            } else {
+                showRemoteServerError = true
+                remoteServerErrorMessage = "This book's download is incomplete. Connect to your Audiobookshelf server to keep listening, then download it again."
+            }
         }
     }
 
