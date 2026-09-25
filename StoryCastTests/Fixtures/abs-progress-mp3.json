@@ -1,0 +1,18 @@
+{
+  "id": "5220412b-23a4-4738-87a5-2f9a19bef5b9",
+  "userId": "user-1",
+  "libraryItemId": "8e5cf94e-9f79-4bea-aaf1-469b77fe0b63",
+  "episodeId": null,
+  "mediaItemId": "de7be81c-00d0-409a-9fc3-35cecea96332",
+  "mediaItemType": "book",
+  "duration": 283,
+  "progress": 0.46,
+  "currentTime": 130,
+  "isFinished": false,
+  "hideFromContinueListening": false,
+  "ebookLocation": null,
+  "ebookProgress": 0,
+  "lastUpdate": 1790331492512,
+  "startedAt": 1790331492512,
+  "finishedAt": null
+}
