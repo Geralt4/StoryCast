@@ -88,11 +88,6 @@ final class LibrarySearchHandler {
     /// - Returns: Filtered folders if searching, otherwise all folders.
     func getFilteredFolders(allFolders: [Folder]) -> [Folder] {
         guard isSearching else { return allFolders }
-        
-        if normalizedSearchText == lastSearchText && !cachedFilteredFolders.isEmpty {
-            return cachedFilteredFolders
-        }
-        
         let query = normalizedSearchText.lowercased()
         return allFolders.filter { $0.name.lowercased().contains(query) }
     }
@@ -103,11 +98,6 @@ final class LibrarySearchHandler {
     /// - Returns: Filtered books if searching, otherwise all books.
     func getFilteredBooks(allBooks: [Book]) -> [Book] {
         guard isSearching else { return allBooks }
-        
-        if normalizedSearchText == lastSearchText && !cachedFilteredBooks.isEmpty {
-            return cachedFilteredBooks
-        }
-        
         let query = normalizedSearchText.lowercased()
         return deduplicatedBooks(allBooks.filter { $0.matchesSearch(query: query) })
     }

@@ -18,6 +18,73 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertEqual(try context.fetch(FetchDescriptor<SyncRuntime>()).count, 1)
     }
 
+    func testOutboxUpsertKeepsInFlightOperationMatchableBySendAcknowledgment() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let bookID = UUID()
+        let recordName = SyncRecordName.progress(bookID: bookID, deviceID: "device-a")
+
+        let inFlight = try SyncOutboxStore.upsert(
+            kind: .saveRecord,
+            subjectKind: .progress,
+            subjectID: recordName,
+            payloadData: try CloudSyncRecordCodec.encodePayload(CloudSyncProgressPayload(action: SyncProgressAction(
+                bookID: bookID,
+                deviceID: "device-a",
+                actionID: UUID(),
+                position: 50,
+                actionAt: Date(timeIntervalSince1970: 1_000),
+                sequence: 1,
+                actionKind: "checkpoint"
+            ))),
+            in: context
+        )
+        // Simulates nextRecordZoneChangeBatch handing the op to a CloudKit batch:
+        // the op is marked "sending" while the save is unacknowledged.
+        SyncOutboxProcessor.markSending(inFlight)
+        try context.save()
+
+        // Playback progress lands on the main actor while the batch is in flight.
+        let updated = try SyncOutboxStore.upsert(
+            kind: .saveRecord,
+            subjectKind: .progress,
+            subjectID: recordName,
+            payloadData: try CloudSyncRecordCodec.encodePayload(CloudSyncProgressPayload(action: SyncProgressAction(
+                bookID: bookID,
+                deviceID: "device-a",
+                actionID: UUID(),
+                position: 90,
+                actionAt: Date(timeIntervalSince1970: 2_000),
+                sequence: 2,
+                actionKind: "seek"
+            ))),
+            in: context
+        )
+        try context.save()
+
+        XCTAssertEqual(inFlight.stateRaw, "sending",
+                       "The op a batch is carrying must stay 'sending' so the send ack still matches it.")
+        XCTAssertNotEqual(updated.id, inFlight.id,
+                          "The newer payload must be queued as its own operation, not stranded mid-flight.")
+        let updatedPayload = try CloudSyncRecordCodec.decodePayload(
+            CloudSyncProgressPayload.self,
+            from: try XCTUnwrap(updated.payloadData)
+        )
+        XCTAssertEqual(updatedPayload.action.position, 90)
+
+        // Simulates the .sentRecordZoneChanges ack: engine looks up subjectID + "sending".
+        let acknowledged = try XCTUnwrap(
+            try context.fetch(FetchDescriptor<SyncOutboxOperation>()).first {
+                $0.subjectID == recordName && $0.stateRaw == "sending"
+            },
+            "The send acknowledgment must still match the in-flight operation."
+        )
+        SyncOutboxProcessor.markSent(acknowledged)
+        try context.save()
+        XCTAssertEqual(try SyncOutboxProcessor.readyOperations(in: context).map(\.id), [updated.id],
+                       "The newer payload must still be delivered after the in-flight save is acknowledged.")
+    }
+
     func testControllerDoesNotReportUpToDateWhileOutboxRemainsQueued() async throws {
         let container = try makeContainer()
         let transport = NoOpCloudSyncTransport()
@@ -1056,6 +1123,65 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertFalse(try verification.fetch(FetchDescriptor<Folder>()).contains { $0.id == deletedFolder.id })
         XCTAssertEqual(try verification.fetch(FetchDescriptor<Book>()).first?.folder?.id, unfiled.id)
         XCTAssertEqual(try verification.fetch(FetchDescriptor<SyncTombstone>()).count, 1)
+    }
+
+    func testInboxRejectsGenerationFromADifferentStoryCastLibrary() async throws {
+        let container = try makeContainer()
+        let boundID = UUID()
+        let foreignID = UUID()
+        let zoneID = CKRecordZone.ID(zoneName: "StoryCastLibraryV1")
+
+        // A device already bound to its own StoryCast generation.
+        let bootstrapContext = ModelContext(container)
+        try await SyncInboxApplier.stage(
+            record: try CloudSyncRecordCodec.makeRecord(
+                type: .generation,
+                recordName: SyncRecordName.generation(),
+                zoneID: zoneID,
+                payload: CloudSyncGenerationPayload(
+                    generationID: boundID,
+                    schemaVersion: CloudSyncRecordCodec.schemaVersion,
+                    createdAt: Date(timeIntervalSince1970: 1_000)
+                )
+            ),
+            container: container
+        )
+        XCTAssertEqual(try SyncAccountCoordinator.binding(in: bootstrapContext).boundGenerationID,
+                       boundID.uuidString.lowercased())
+
+        // The same zone is later fetched under a different generation.
+        do {
+            try await SyncInboxApplier.stage(
+                record: try CloudSyncRecordCodec.makeRecord(
+                    type: .generation,
+                    recordName: SyncRecordName.generation(),
+                    zoneID: zoneID,
+                    payload: CloudSyncGenerationPayload(
+                        generationID: foreignID,
+                        schemaVersion: CloudSyncRecordCodec.schemaVersion,
+                        createdAt: Date(timeIntervalSince1970: 2_000)
+                    )
+                ),
+                container: container
+            )
+            XCTFail("Expected a foreign generation record to be rejected.")
+        } catch let error as SyncInboxError {
+            guard case .generationMismatch(let local, let remote) = error else {
+                return XCTFail("Expected generationMismatch, got \(error)")
+            }
+            XCTAssertEqual(local, boundID.uuidString.lowercased())
+            XCTAssertEqual(remote, foreignID.uuidString.lowercased())
+        }
+
+        try await SyncInboxApplier.drain(container: container)
+        let verification = ModelContext(container)
+        XCTAssertEqual(try SyncAccountCoordinator.binding(in: verification).boundGenerationID,
+                       boundID.uuidString.lowercased(),
+                       "A rejected foreign generation must not rebrand the device.")
+        XCTAssertEqual(try SyncRuntimeStore.runtime(in: verification).generationID,
+                       boundID.uuidString.lowercased())
+        XCTAssertTrue(try verification.fetch(FetchDescriptor<SyncInboxRecord>()).allSatisfy { $0.stateRaw != "pending" },
+                      "The rejected record must not block every future drain pass.")
     }
 
     private func makeContainer() throws -> ModelContainer {

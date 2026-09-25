@@ -121,12 +121,8 @@ struct LibraryView: View {
                 }
             } message: { Text("Are you sure you want to delete \"\(coordinator.searchBookToDelete?.title ?? "this book")\"?") }
             .onDisappear {
-                deleteBookTask?.cancel()
-                deleteFolderTask?.cancel()
-                moveFoldersTask?.cancel()
-                deleteFoldersTask?.cancel()
-                mergeFolderTask?.cancel()
-                importHandler.onDisappear()
+                // Do not cancel import/delete/move tasks: this list disappears
+                // when the user pushes a folder or player.
                 searchHandler.onDisappear()
             }
         }
@@ -187,7 +183,12 @@ struct LibraryView: View {
             if unfiledFolder != nil || !userFolders.isEmpty {
                 Section {
                     if let unfiled = unfiledFolder { folderRowView(unfiled) }
-                    ForEach(userFolders) { folderRowView($0) }.onDelete(perform: isEditing ? nil : deleteUserFolders as ((IndexSet) -> Void)?)
+                    // No `.onDelete` here: `FolderRowView` already installs its
+                    // own trailing Delete swipe action (with a confirmation
+                    // alert). A List-level `.onDelete` renders a second Delete
+                    // button on the same row and deletes immediately without
+                    // confirmation.
+                    ForEach(userFolders) { folderRowView($0) }
                 } header: { Text("Folders") }
             }
         }
@@ -295,21 +296,6 @@ struct LibraryView: View {
                 try await folderOperations.mergeFolder(source, into: destination)
             } catch {
                 presentLibraryError("Failed to merge folder", error: error)
-            }
-        }
-    }
-
-    private func deleteUserFolders(offsets: IndexSet) {
-        guard let destinationFolder = unfiledFolder else { return }
-        let foldersToDelete = offsets.compactMap { userFolders.indices.contains($0) ? userFolders[$0] : nil }
-        let folderIDs = Set(foldersToDelete.map(\.id))
-        guard !folderIDs.isEmpty else { return }
-        deleteFoldersTask?.cancel()
-        deleteFoldersTask = Task {
-            do {
-                try await folderOperations.moveFolders(folderIDs, into: destinationFolder)
-            } catch {
-                presentLibraryError("Failed to delete folders", error: error)
             }
         }
     }

@@ -15,6 +15,8 @@ struct FolderDetailView: View {
     @State private var actionTask: Task<Void, Never>?
     @State private var showFolderError = false
     @State private var folderErrorMessage = ""
+    @State private var booksPendingDeletion: [Book] = []
+    @State private var showDeleteBookConfirmation = false
 
     init(folder: Folder) {
         self.folder = folder
@@ -50,7 +52,7 @@ struct FolderDetailView: View {
             selectedBookIds: $coordinator.selectedBookIds,
             onDeleteBooks: { offsets in
                 let books: [Book] = offsets.compactMap { filteredBooks.indices.contains($0) ? filteredBooks[$0] : nil }
-                deleteBooks(books)
+                requestDelete(books)
             },
             onSelect: { book in
                 coordinator.toggleSelection(for: book)
@@ -59,7 +61,7 @@ struct FolderDetailView: View {
                 coordinator.beginMove(for: book)
             },
             onDelete: { book in
-                deleteBooks([book])
+                requestDelete([book])
             },
             onDownload: { book in
                 bookActions.downloadBook(book)
@@ -153,6 +155,20 @@ struct FolderDetailView: View {
         } message: {
             Text(folderErrorMessage)
         }
+        .alert("Delete Book", isPresented: $showDeleteBookConfirmation) {
+            Button("Cancel", role: .cancel) { booksPendingDeletion = [] }
+            Button("Delete", role: .destructive) {
+                let books = booksPendingDeletion
+                booksPendingDeletion = []
+                deleteBooks(books)
+            }
+        } message: {
+            if booksPendingDeletion.count == 1 {
+                Text("Are you sure you want to delete \"\(booksPendingDeletion[0].title)\"?")
+            } else {
+                Text("Are you sure you want to delete \(booksPendingDeletion.count) books?")
+            }
+        }
         .overlay {
             if importService.isImporting {
                 ImportProgressOverlay(importService: importService) {
@@ -215,10 +231,16 @@ struct FolderDetailView: View {
             coordinator.pruneSelection(to: selectableBookIds)
         }
         .onDisappear {
-            actionTask?.cancel()
-            importHandler.onDisappear()
+            // Do not cancel import/delete tasks: this list disappears when
+            // the user opens a book.
             searchHandler.onDisappear()
         }
+    }
+
+    private func requestDelete(_ books: [Book]) {
+        guard !books.isEmpty else { return }
+        booksPendingDeletion = books
+        showDeleteBookConfirmation = true
     }
 
     private func deleteBooks(_ books: [Book], onSuccess: (() -> Void)? = nil) {

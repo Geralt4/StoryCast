@@ -156,11 +156,9 @@ final class LibraryImportHandler {
         importService.cancelImport()
     }
     
-    /// Cleans up tasks when view disappears.
-    func onDisappear() {
-        importTask?.cancel()
-        importTask = nil
-        retryTask?.cancel()
-        retryTask = nil
-    }
+    /// Called when the hosting list leaves the screen.
+    /// Import and retry tasks must keep running: this view disappears when
+    /// the user pushes a folder or player, and cancelling here aborted
+    /// in-flight imports.
+    func onDisappear() {}
 }

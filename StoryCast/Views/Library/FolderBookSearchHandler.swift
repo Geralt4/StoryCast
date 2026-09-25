@@ -36,11 +36,6 @@ final class FolderBookSearchHandler {
 
     func filteredBooks(from books: [Book]) -> [Book] {
         guard isSearching else { return books }
-
-        if normalizedSearchText == lastSearchText && !cachedFilteredBooks.isEmpty {
-            return cachedFilteredBooks
-        }
-
         return books.filter { $0.matchesSearch(query: normalizedSearchText) }
     }
 

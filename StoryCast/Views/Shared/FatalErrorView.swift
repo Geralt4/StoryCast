@@ -4,7 +4,7 @@ import MessageUI
 
 struct FatalErrorView: View {
     let error: Error?
-    let onReset: () -> Void
+    let onReset: () async -> Void
     
     @State private var showResetConfirmation = false
     @State private var showResetSuccess = false
@@ -117,8 +117,10 @@ struct FatalErrorView: View {
         .alert("Reset All Data?", isPresented: $showResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset Everything", role: .destructive) {
-                onReset()
-                showResetSuccess = true
+                Task {
+                    await onReset()
+                    showResetSuccess = true
+                }
             }
         } message: {
             Text("This will permanently delete all your audiobooks, playback progress, server connections, and settings. This action cannot be undone.")

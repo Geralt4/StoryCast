@@ -35,15 +35,18 @@ class SleepTimerService: ObservableObject {
 
         totalTime = minutes * 60
         remainingTime = totalTime
-        timerEndDate = Date().addingTimeInterval(TimeInterval(totalTime))
         isActive = true
         endOfChapterTime = nil
         AccessibilityNotifications.announce("Sleep timer set for \(minutes) minutes")
         
         if audioPlayerService.isPlaying {
+            timerEndDate = Date().addingTimeInterval(TimeInterval(totalTime))
             isWaitingForPlaybackStart = false
             startTimedCountdown(for: timerGeneration)
         } else {
+            // Do not stamp an end date while paused — otherwise a queued
+            // timer expires in wall-clock time before playback even starts.
+            timerEndDate = nil
             isWaitingForPlaybackStart = true
         }
     }
@@ -94,12 +97,14 @@ class SleepTimerService: ObservableObject {
             remainingTime += minutes * 60
             totalTime += minutes * 60
             let extraSeconds = TimeInterval(minutes * 60)
-            if let existingEndDate = timerEndDate {
-                timerEndDate = existingEndDate.addingTimeInterval(extraSeconds)
+            if audioPlayerService.isPlaying {
+                if let existingEndDate = timerEndDate {
+                    timerEndDate = existingEndDate.addingTimeInterval(extraSeconds)
+                } else {
+                    timerEndDate = Date().addingTimeInterval(TimeInterval(remainingTime))
+                }
             } else {
-                timerEndDate = Date().addingTimeInterval(TimeInterval(remainingTime))
-            }
-            if !audioPlayerService.isPlaying {
+                timerEndDate = nil
                 isWaitingForPlaybackStart = true
             }
         }

@@ -3,6 +3,14 @@ import Combine
 import os
 import SwiftData
 
+enum DownloadManagerError: LocalizedError {
+    case downloadInProgress
+
+    var errorDescription: String? {
+        "This book is already downloading."
+    }
+}
+
 @MainActor
 final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
     static let shared = DownloadManager()
@@ -37,16 +45,16 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
 
     func downloadBook(_ book: Book, server: ABSServer, container: ModelContainer) async throws {
         guard book.isRemote, let itemId = book.remoteItemId else { return }
+
+        let bookId = book.id
+        // Reject a second concurrent download for the same book. Without this
+        // guard, the second caller would overwrite the first caller's
+        // continuation in `continuations[bookId]`, orphaning it (the first
+        // caller would hang forever), and both URLSession tasks would race
+        // writing to the same destination file in `finishDownload`.
+        try Self.ensureNotAlreadyDownloading(bookId: bookId, downloads: downloads, continuations: continuations)
+
         guard let token = await AudiobookshelfAuth.shared.token(for: server.normalizedURL) else { throw APIError.tokenMissing }
-        // Defer the container registration until AFTER the network calls
-        // succeed, so an early throw (e.g. network unreachable) doesn't
-        // leak a dict entry that only the task completion path cleans up.
-        var didRegisterContainer = false
-        defer {
-            if !didRegisterContainer {
-                modelContainers.removeValue(forKey: book.id)
-            }
-        }
 
         let item = try await AudiobookshelfAPI.shared.fetchLibraryItem(baseURL: server.normalizedURL, token: token, itemId: itemId)
         guard let firstTrack = item.media.tracks?.first, let contentUrl = firstTrack.contentUrl else { throw APIError.invalidResponse }
@@ -55,12 +63,27 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
         do { stream = try await AudiobookshelfAPI.shared.authenticatedStream(baseURL: server.normalizedURL, token: token, contentUrl: contentUrl) }
         catch { AppLogger.sync.error("Failed to create authenticated stream for download: \(error.localizedDescription, privacy: .private)"); throw error }
 
-        let bookId = book.id
+        // Re-check after the network awaits: another call may have started a
+        // download for this book while we were fetching. The defer below is
+        // installed only after this check so a duplicate caller that throws
+        // here cannot remove the first caller's container registration.
+        try assertNotAlreadyDownloading(bookId: bookId)
+
         let fileExtension = DownloadManager.extractFileExtension(from: contentUrl)
+        // Defer the container registration until AFTER the network calls
+        // succeed, so an early throw (e.g. network unreachable) doesn't
+        // leak a dict entry that only the task completion path cleans up.
+        var didRegisterContainer = false
+        defer {
+            if !didRegisterContainer {
+                modelContainers.removeValue(forKey: bookId)
+            }
+        }
+
         // Now that the network prerequisites succeeded, register the
         // container so the URLSession download delegate can look it up.
         // Already on the main actor (the enclosing class is @MainActor).
-        modelContainers[book.id] = container
+        modelContainers[bookId] = container
         didRegisterContainer = true
 
         downloads[bookId] = DownloadState(bookId: bookId, progress: 0, status: .queued)
@@ -79,8 +102,7 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
                 try? await Task.sleep(nanoseconds: UInt64(ImportDefaults.downloadTimeout * 1_000_000_000))
                 guard !Task.isCancelled else { return }
                 if !resumedContinuations.contains(bookId), timeoutTasks[bookId] != nil {
-                    resumeContinuation(for: bookId, result: .failure(APIError.serverUnreachable))
-                    cancelTimeoutTask(for: bookId)
+                    failDownload(bookId: bookId, error: APIError.serverUnreachable)
                 }
             }
             registerTimeoutTask(timeoutTask, for: bookId)
@@ -88,12 +110,47 @@ final class DownloadManager: NSObject, ObservableObject, URLSessionDelegate {
         cancelTimeoutTask(for: bookId)
     }
 
+    private func assertNotAlreadyDownloading(bookId: UUID) throws {
+        try Self.ensureNotAlreadyDownloading(bookId: bookId, downloads: downloads, continuations: continuations)
+    }
+
+    private nonisolated static func ensureNotAlreadyDownloading(
+        bookId: UUID,
+        downloads: [UUID: DownloadState],
+        continuations: [UUID: CheckedContinuation<Void, Error>]
+    ) throws {
+        if continuations[bookId] != nil {
+            throw DownloadManagerError.downloadInProgress
+        }
+        // A completed or failed entry must not block a future re-download;
+        // only queued/downloading states indicate an active transfer.
+        if let state = downloads[bookId] {
+            switch state.status {
+            case .queued, .downloading:
+                throw DownloadManagerError.downloadInProgress
+            case .paused, .completed, .failed:
+                break
+            }
+        }
+    }
+
     func cancelDownload(bookId: UUID) {
+        failDownload(bookId: bookId, error: CancellationError(), removeDownloadState: true)
+    }
+
+    private func failDownload(bookId: UUID, error: Error, removeDownloadState: Bool = false) {
         cancelTimeoutTask(for: bookId)
-        if let task = taskMap.first(where: { $0.value == bookId })?.key { taskMap.removeValue(forKey: task); task.cancel() }
-        downloads.removeValue(forKey: bookId)
+        if let task = taskMap.first(where: { $0.value == bookId })?.key {
+            taskMap.removeValue(forKey: task)
+            task.cancel()
+        }
         modelContainers.removeValue(forKey: bookId)
-        resumeContinuation(for: bookId, result: .failure(CancellationError()))
+        if removeDownloadState {
+            downloads.removeValue(forKey: bookId)
+        } else {
+            downloads[bookId]?.status = .failed(error)
+        }
+        resumeContinuation(for: bookId, result: .failure(error))
     }
 
     func cancelDownloads(for bookIds: Set<UUID>) { for bookId in bookIds { cancelDownload(bookId: bookId) } }
@@ -312,10 +369,17 @@ extension DownloadManager {
         downloads[bookId] = DownloadState(bookId: bookId, progress: 0, status: .downloading)
         if let timeoutTask { registerTimeoutTask(timeoutTask, for: bookId) }
     }
+
+    func debugMarkDownloadCompleted(bookId: UUID) {
+        downloads[bookId]?.status = .completed
+        downloads[bookId]?.progress = 1.0
+    }
+
     func debugResetState() {
         for timeoutTask in timeoutTasks.values { timeoutTask.cancel() }
         timeoutTasks.removeAll(); downloads.removeAll(); continuations.removeAll(); resumedContinuations.removeAll(); taskMap.removeAll(); modelContainers.removeAll(); backgroundCompletionHandlers.removeAll()
     }
+
     func debugRegisterTimeoutTask(_ task: Task<Void, Never>, for bookId: UUID) { registerTimeoutTask(task, for: bookId) }
     func debugCancelTimeoutTask(for bookId: UUID) { cancelTimeoutTask(for: bookId) }
 }

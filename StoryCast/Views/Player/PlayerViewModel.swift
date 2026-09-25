@@ -240,15 +240,18 @@ final class PlayerViewModel {
         periodicSaveTimer?.invalidate()
         periodicSaveTimer = nil
         clearChapterPlaybackSession()
-        // Save playback position only if this book is still loaded
-        guard isCurrentBookLoaded() else { return }
+        // Drop any pending debounced save: if this book is no longer the
+        // loaded one, a stale task could otherwise persist the wrong
+        // position into it after the view is gone.
+        debouncedSaveTask?.cancel()
+        debouncedSaveTask = nil
+        // Save playback position only if this book is still the playing one
+        guard isCurrentPlaybackTarget() else { return }
         forceSavePlaybackPosition(audioPlayer.currentTime, errorMessage: "Couldn't save playback position.")
-        // Close remote session if this was a remote book
-        if book.isRemote {
-            Task {
-                await sessionManager.closeCurrentSession()
-            }
-        }
+        // Do not close a remote session here. PlayerView is a navigation
+        // destination, so popping back to the library would tear down an
+        // in-progress stream. The next startSession() already closes any
+        // previous session, and app termination is handled separately.
     }
 
     // MARK: - Event Handlers
@@ -259,13 +262,14 @@ final class PlayerViewModel {
     }
 
     func handlePlaybackDidReachEnd() {
+        guard isCurrentPlaybackTarget() else { return }
         clearChapterPlaybackSession()
         audioPlayer.pause()
         persistPlaybackPosition(book.duration, errorMessage: "Couldn't save completed playback position.", forceImmediate: true)
     }
 
     func handlePlaybackStateChange(isPlaying: Bool) {
-        guard isCurrentBookLoaded() else { return }
+        guard isCurrentPlaybackTarget() else { return }
         if isPlaying {
             updateLastPlayedDate()
             AccessibilityNotifications.announce("Playing \(book.title)")
@@ -278,7 +282,7 @@ final class PlayerViewModel {
 
     func handleScenePhaseChange(_ newPhase: ScenePhase) {
         guard newPhase == .inactive || newPhase == .background else { return }
-        guard isCurrentBookLoaded() else { return }
+        guard isCurrentPlaybackTarget() else { return }
         forceSavePlaybackPosition(audioPlayer.currentTime, errorMessage: "Couldn't save playback position.")
     }
 
@@ -384,6 +388,17 @@ final class PlayerViewModel {
         return audioPlayer.currentURL == url
     }
 
+    /// Whether the shared player is currently playing THIS book.
+    ///
+    /// This complements `isCurrentBookLoaded()`: after a remote book's
+    /// download completes mid-stream, `usesRemoteStreaming` flips to `false`
+    /// (a local cache URL now exists), so the URL comparison reports "not
+    /// loaded" even though the book's streaming session is still the one
+    /// playing. The session check keeps matching in that case.
+    func isCurrentPlaybackTarget() -> Bool {
+        isCurrentBookLoaded() || sessionManager.isCurrentSession(for: book)
+    }
+
     private func fetchServer(for serverId: UUID?) -> ABSServer? {
         guard let serverId = serverId else { return nil }
         let descriptor = FetchDescriptor<ABSServer>(
@@ -410,6 +425,12 @@ final class PlayerViewModel {
         }.value
         guard audioPlayer.currentURL != localAudioURL else { return }
         if fileExists {
+            // Local playback does not use an Audiobookshelf session. Close any
+            // leftover remote session so progress sync does not keep targeting
+            // the previous stream after the user switches books.
+            if sessionManager.activeRemoteItemId != nil {
+                await sessionManager.closeCurrentSession()
+            }
             let backupPosition = restorePositionFromUserDefaults()
             let startPosition = backupPosition ?? book.lastPlaybackPosition
             audioPlayer.loadAudio(url: localAudioURL, title: book.title, duration: safeDuration, seekTo: startPosition)
@@ -513,7 +534,7 @@ final class PlayerViewModel {
     // MARK: - Chapter Boundary Handling
 
     private func handleChapterBoundaryIfNeeded(currentTime: Double, isUserDragging: Bool) {
-        guard isCurrentBookLoaded() else {
+        guard isCurrentPlaybackTarget() else {
             clearChapterPlaybackSession()
             return
         }

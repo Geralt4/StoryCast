@@ -176,11 +176,15 @@ private struct RemoteBookRowNavigator: View {
 
     private func fetchBook() {
         let remoteId = item.id
-        var descriptor = FetchDescriptor<Book>(
+        let serverId = server.id
+        let descriptor = FetchDescriptor<Book>(
             predicate: #Predicate { $0.remoteItemId == remoteId }
         )
-        descriptor.fetchLimit = 1
-        book = try? modelContext.fetch(descriptor).first
+        guard let matches = try? modelContext.fetch(descriptor) else { return }
+        // Remote item ids are only unique per server. Do not fall back to
+        // another server's book — that would open the wrong player. Server
+        // id is optional, so `#Predicate` cannot compare it reliably.
+        book = matches.first { $0.serverId == serverId }
     }
 
     private func formatDuration(_ seconds: Double) -> String {

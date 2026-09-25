@@ -20,9 +20,7 @@ struct ContentView: View {
                 StorageVersionMismatchView(error: error)
             case .unrecoverable(let error):
                 FatalErrorView(error: error, onReset: {
-                    Task {
-                        await StorageManager.shared.resetAllData(container: modelContext.container)
-                    }
+                    await StorageManager.shared.resetAllData(container: modelContext.container)
                 })
             }
         }

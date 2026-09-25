@@ -9,19 +9,31 @@ actor ImportOperationGate {
     private var isExecuting = false
 
     func acquire(requestID: UUID) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            // If we're the active execution, hand the continuation out
-            // immediately without recording it in either dictionary —
-            // otherwise the entry would leak into pendingOrder and
-            // drainNext() would later pop a stale requestID and confuse
-            // the release path.
-            if !isExecuting {
-                isExecuting = true
-                continuation.resume()
-                return
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                // If we're the active execution, hand the continuation out
+                // immediately without recording it in either dictionary —
+                // otherwise the entry would leak into pendingOrder and
+                // drainNext() would later pop a stale requestID and confuse
+                // the release path.
+                if !isExecuting {
+                    isExecuting = true
+                    continuation.resume()
+                    return
+                }
+                pendingContinuations[requestID] = continuation
+                pendingOrder.append(requestID)
             }
-            pendingContinuations[requestID] = continuation
-            pendingOrder.append(requestID)
+        } onCancel: {
+            Task { await self.cancel(requestID: requestID) }
+        }
+
+        // Cancellation while we were already the executor cannot be handled
+        // by cancel(requestID:) — that only resumes pending waiters. Release
+        // so the next waiter is not stuck behind a cancelled owner.
+        if Task.isCancelled {
+            release()
+            throw CancellationError()
         }
     }
 
