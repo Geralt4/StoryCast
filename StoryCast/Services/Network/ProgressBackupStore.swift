@@ -6,15 +6,21 @@ import os
 final class ProgressBackupStore {
     static let shared = ProgressBackupStore()
     
+    private var apiOverride: AudiobookshelfAPI?
+    private var api: AudiobookshelfAPI { apiOverride ?? .shared }
+
     private init() {}
     
-    func backup(serverURL: String, itemId: String, currentTime: Double, timeListened: Double, duration: Double) {
+    /// `changedAt` is when the position last really changed; it defaults to now.
+    /// Recording the change time (not the time of the backup) keeps a paused,
+    /// stale position from looking newer than progress made elsewhere.
+    func backup(serverURL: String, itemId: String, currentTime: Double, timeListened: Double, duration: Double, changedAt: Date? = nil) {
         let key = pendingProgressKey(serverURL: serverURL, itemId: itemId)
         let backup: [String: Any] = [
             "currentTime": currentTime,
             "timeListened": timeListened,
             "duration": duration,
-            "timestamp": Date().timeIntervalSince1970
+            "timestamp": (changedAt ?? Date()).timeIntervalSince1970
         ]
         UserDefaults.standard.set(backup, forKey: key)
         AppLogger.sync.warning("Progress backed up locally due to sync failure: \(currentTime)s")
@@ -43,13 +49,14 @@ final class ProgressBackupStore {
         }
         
         do {
-            try await AudiobookshelfAPI.shared.updateProgress(
+            let isFinished = duration > 0 && currentTime >= duration - 10
+            try await api.updateProgress(
                 baseURL: server.normalizedURL,
                 token: token,
                 itemId: itemId,
                 currentTime: currentTime,
                 duration: duration,
-                isFinished: duration > 0 && currentTime >= duration - 10
+                isFinished: isFinished ? true : nil
             )
             clear(serverURL: server.normalizedURL, itemId: itemId)
             AppLogger.sync.info("Recovered pending progress: \(currentTime)s")
@@ -113,6 +120,12 @@ extension ProgressBackupStore {
     
     func debugClear(serverURL: String, itemId: String) {
         clear(serverURL: serverURL, itemId: itemId)
+    }
+
+    func debugOverrideAPI(_ api: AudiobookshelfAPI?) { apiOverride = api }
+
+    func debugBackupTimestamp(serverURL: String, itemId: String) -> Double? {
+        UserDefaults.standard.dictionary(forKey: pendingProgressKey(serverURL: serverURL, itemId: itemId))?["timestamp"] as? Double
     }
 }
 #endif

@@ -115,6 +115,19 @@ actor AudiobookshelfAPI {
         try await syncOrCloseSession(baseURL: baseURL, token: token, sessionId: sessionId, currentTime: currentTime, timeListened: timeListened, duration: duration, isClose: true)
     }
 
+    /// Closes a session without reporting a position, for sessions where
+    /// nothing was listened to. The server treats an empty body as no update,
+    /// so it can't overwrite progress made on another device meanwhile.
+    func closeSessionWithoutUpdate(baseURL: String, token: String, sessionId: String) async throws {
+        let url = try makeURL(base: baseURL, path: "/api/session/\(sessionId)/close")
+        var request = authorizedRequest(url: url, token: token, method: "POST")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        let (data, response) = try await performRequest(request)
+        if let http = response as? HTTPURLResponse, http.statusCode == 404 { return }
+        try await validateResponse(response, data: data, request: request)
+    }
+
     private func syncOrCloseSession(baseURL: String, token: String, sessionId: String, currentTime: Double, timeListened: Double, duration: Double, isClose: Bool) async throws {
         let path = isClose ? "/api/session/\(sessionId)/close" : "/api/session/\(sessionId)/sync"
         let url = try makeURL(base: baseURL, path: path)
@@ -135,7 +148,9 @@ actor AudiobookshelfAPI {
         return try decode(ABSMediaProgress.self, from: data)
     }
 
-    func updateProgress(baseURL: String, token: String, itemId: String, currentTime: Double, duration: Double, isFinished: Bool) async throws {
+    /// Pass `isFinished: nil` unless the book was finished: the server resets a
+    /// finished book to the start when it receives `isFinished: false`.
+    func updateProgress(baseURL: String, token: String, itemId: String, currentTime: Double, duration: Double, isFinished: Bool?) async throws {
         let url = try makeURL(base: baseURL, path: "/api/me/progress/\(itemId)")
         var request = authorizedRequest(url: url, token: token, method: "PATCH")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

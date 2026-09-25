@@ -41,6 +41,8 @@ final class PlaybackSessionManager: ObservableObject {
     private var sessionDuration: Double = 0
     private var totalTimeListened: Double = 0
     private var lastObservedTime: Double = 0
+    /// Wall-clock time of the previous playback tick while audio was advancing.
+    private var lastListeningTick: Date?
     private var cancellables = Set<AnyCancellable>()
     nonisolated(unsafe) private var lifecycleObservers: [Any] = []
     private var isTerminating = false
@@ -51,15 +53,29 @@ final class PlaybackSessionManager: ObservableObject {
     #endif
     
     private init() {
-        AudioPlayerService.shared.$currentTime
-            .debounce(for: .seconds(1), scheduler: RunLoop.main)
+        let player = AudioPlayerService.shared
+        player.$currentTime
             .sink { [weak self] newTime in
-                guard let self else { return }
-                if AudioPlayerService.shared.isPlaying && newTime > self.lastObservedTime && !self.isSeeking {
-                    self.totalTimeListened += newTime - self.lastObservedTime
-                }
-                if self.isSeeking { self.isSeeking = false }
-                self.lastObservedTime = newTime
+                self?.handlePlaybackTick(
+                    newTime,
+                    at: Date(),
+                    isAudioAdvancing: player.isAudioAdvancing,
+                    isSeekPending: player.isSeekPending,
+                    bookID: player.currentBookID
+                )
+            }
+            .store(in: &cancellables)
+        player.$isAudioAdvancing
+            .removeDuplicates()
+            .sink { [weak self] isAdvancing in
+                self?.lastListeningTick = isAdvancing ? Date() : nil
+            }
+            .store(in: &cancellables)
+        // A load moves the position without anyone listening.
+        player.$loadGeneration
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                self?.lastListeningTick = nil
             }
             .store(in: &cancellables)
         
@@ -103,6 +119,26 @@ final class PlaybackSessionManager: ObservableObject {
         }
     }
 
+    /// Counts listening time by the wall clock while audio is actually playing.
+    /// The player publishes the time every second of *media* time, so at 1.5×
+    /// ticks arrive every 0.67 s; summing wall-clock gaps (capped at 2 s, so a
+    /// stall or suspension is not credited) gives the real time listened.
+    func handlePlaybackTick(_ newTime: Double, at now: Date, isAudioAdvancing: Bool, isSeekPending: Bool, bookID: UUID?) {
+        if isAudioAdvancing, !isSeekPending {
+            if let lastTick = lastListeningTick, activeSessionId != nil {
+                totalTimeListened += min(max(0, now.timeIntervalSince(lastTick)), 2)
+            }
+            lastListeningTick = now
+            if let bookID {
+                PlaybackProgressTracker.shared.recordChange(bookID: bookID, at: now)
+            }
+        }
+        if isSeeking, !isSeekPending {
+            isSeeking = false
+        }
+        lastObservedTime = newTime
+    }
+
     func isCurrentSession(for book: Book) -> Bool {
         guard book.isRemote, let itemId = book.remoteItemId, let serverId = book.serverId else { return false }
         return currentItemId == itemId && currentServer?.id == serverId
@@ -143,22 +179,53 @@ final class PlaybackSessionManager: ObservableObject {
         let currentTime = AudioPlayerService.shared.currentTime
         let listened = totalTimeListened
         let duration = sessionDuration
+        let hasUpdate = hasUnsyncedProgress(currentTime: currentTime, listened: listened)
+        let bookID = activeBookID
         
         guard let token = await AudiobookshelfAuth.shared.token(for: server.normalizedURL) else {
-            ProgressBackupStore.shared.backup(serverURL: server.normalizedURL, itemId: itemId, currentTime: currentTime, timeListened: listened, duration: duration)
+            if hasUpdate {
+                backupProgress(server: server, itemId: itemId, currentTime: currentTime, listened: listened, duration: duration)
+            }
             clearSession()
             return
         }
         
         do {
-            try await api.closeSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId, currentTime: currentTime, timeListened: listened, duration: duration)
-            ProgressBackupStore.shared.clear(serverURL: server.normalizedURL, itemId: itemId)
-            AppLogger.sync.info("Session \(sessionId, privacy: .private) closed at \(currentTime)s (total listened: \(listened)s)")
+            if hasUpdate {
+                try await api.closeSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId, currentTime: currentTime, timeListened: listened, duration: duration)
+                ProgressBackupStore.shared.clear(serverURL: server.normalizedURL, itemId: itemId)
+                if let bookID { PlaybackProgressTracker.shared.markSynced(bookID: bookID) }
+            } else {
+                // Nothing changed here: don't report a position that could
+                // overwrite progress made on another device meanwhile.
+                try await api.closeSessionWithoutUpdate(baseURL: server.normalizedURL, token: token, sessionId: sessionId)
+            }
+            AppLogger.sync.info("Session \(sessionId, privacy: .private) closed at \(currentTime)s (total listened: \(listened)s, reported: \(hasUpdate))")
         } catch {
             AppLogger.sync.error("Failed to close session: \(error.localizedDescription, privacy: .private)")
-            ProgressBackupStore.shared.backup(serverURL: server.normalizedURL, itemId: itemId, currentTime: currentTime, timeListened: listened, duration: duration)
+            if hasUpdate {
+                backupProgress(server: server, itemId: itemId, currentTime: currentTime, listened: listened, duration: duration)
+            }
         }
         clearSession()
+    }
+
+    /// Whether this session has progress the server hasn't seen: time listened,
+    /// or a position moved (for example by a seek) since the last sync.
+    private func hasUnsyncedProgress(currentTime: Double, listened: Double) -> Bool {
+        listened > 0 || abs(currentTime - lastSyncedTime) >= progressBackupEpsilon
+    }
+
+    private func backupProgress(server: ABSServer, itemId: String, currentTime: Double, listened: Double, duration: Double) {
+        let changedAt = activeBookID.flatMap { PlaybackProgressTracker.shared.lastChange(bookID: $0) }
+        ProgressBackupStore.shared.backup(
+            serverURL: server.normalizedURL,
+            itemId: itemId,
+            currentTime: currentTime,
+            timeListened: listened,
+            duration: duration,
+            changedAt: changedAt
+        )
     }
     
     func syncProgress() async {
@@ -172,6 +239,7 @@ final class PlaybackSessionManager: ObservableObject {
 
 private extension PlaybackSessionManager {
     func handleAppDidEnterBackground() {
+        PlaybackProgressTracker.shared.flush()
         guard activeSessionId != nil else { return }
         isInBackground = true
         performBackgroundSyncTask(named: "StoryCast.ProgressSync") { [weak self] in
@@ -193,34 +261,40 @@ private extension PlaybackSessionManager {
     }
     
     func handleAppWillTerminate() {
+        PlaybackProgressTracker.shared.flush()
         guard let sessionId = activeSessionId, let server = currentServer, let itemId = currentItemId else { return }
         isTerminating = true
         stopAllTimers()
+        let currentTime = AudioPlayerService.shared.currentTime
+        let listened = totalTimeListened
+        let duration = sessionDuration
+        let hasUpdate = hasUnsyncedProgress(currentTime: currentTime, listened: listened)
         
         performBackgroundSyncTask(named: "StoryCast.SessionSync") { [weak self] in
+            guard let self else { return }
             guard let token = await AudiobookshelfAuth.shared.token(for: server.normalizedURL) else {
-                ProgressBackupStore.shared.backup(serverURL: server.normalizedURL, itemId: itemId,
-                                                   currentTime: AudioPlayerService.shared.currentTime,
-                                                   timeListened: self?.totalTimeListened ?? 0,
-                                                   duration: self?.sessionDuration ?? 0)
-                self?.clearSession()
+                if hasUpdate {
+                    self.backupProgress(server: server, itemId: itemId, currentTime: currentTime, listened: listened, duration: duration)
+                }
+                self.clearSession()
                 return
             }
             do {
-                try await self?.api.closeSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId,
-                                                                 currentTime: AudioPlayerService.shared.currentTime,
-                                                                 timeListened: self?.totalTimeListened ?? 0,
-                                                                 duration: self?.sessionDuration ?? 0)
-                ProgressBackupStore.shared.clear(serverURL: server.normalizedURL, itemId: itemId)
+                if hasUpdate {
+                    try await self.api.closeSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId,
+                                                    currentTime: currentTime, timeListened: listened, duration: duration)
+                    ProgressBackupStore.shared.clear(serverURL: server.normalizedURL, itemId: itemId)
+                } else {
+                    try await self.api.closeSessionWithoutUpdate(baseURL: server.normalizedURL, token: token, sessionId: sessionId)
+                }
                 AppLogger.sync.info("Session \(sessionId, privacy: .private) closed at termination")
             } catch {
                 AppLogger.sync.error("Failed to close session at termination: \(error.localizedDescription, privacy: .private)")
-                ProgressBackupStore.shared.backup(serverURL: server.normalizedURL, itemId: itemId,
-                                                   currentTime: AudioPlayerService.shared.currentTime,
-                                                   timeListened: self?.totalTimeListened ?? 0,
-                                                   duration: self?.sessionDuration ?? 0)
+                if hasUpdate {
+                    self.backupProgress(server: server, itemId: itemId, currentTime: currentTime, listened: listened, duration: duration)
+                }
             }
-            self?.clearSession()
+            self.clearSession()
         }
     }
     
@@ -361,7 +435,7 @@ private extension PlaybackSessionManager {
             guard listened > 0 || abs(currentTime - lastSyncedTime) >= progressBackupEpsilon else { return }
             guard listened >= AudiobookshelfDefaults.minTimeListenedToSync else {
                 if let itemId = currentItemId {
-                    ProgressBackupStore.shared.backup(serverURL: server.normalizedURL, itemId: itemId, currentTime: currentTime, timeListened: listened, duration: duration)
+                    backupProgress(server: server, itemId: itemId, currentTime: currentTime, listened: listened, duration: duration)
                 }
                 AppLogger.sync.debug("Backed up pending progress while entering background: \(currentTime)s")
                 return
@@ -377,15 +451,20 @@ private extension PlaybackSessionManager {
         do {
             try await api.syncSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId, currentTime: currentTime, timeListened: listened, duration: duration)
             lastSyncedTime = currentTime
-            totalTimeListened = 0
+            // Only this sync's listening was reported; keep anything counted
+            // while the request was in flight.
+            totalTimeListened = max(0, totalTimeListened - listened)
             if let itemId = currentItemId {
                 ProgressBackupStore.shared.clear(serverURL: server.normalizedURL, itemId: itemId)
+            }
+            if let bookID = activeBookID {
+                PlaybackProgressTracker.shared.markSynced(bookID: bookID)
             }
             AppLogger.sync.debug("Synced progress: \(currentTime)s (listened \(listened)s)")
         } catch {
             lastSyncError = error
             if requireUnsyncedProgress, let itemId = currentItemId {
-                ProgressBackupStore.shared.backup(serverURL: server.normalizedURL, itemId: itemId, currentTime: currentTime, timeListened: listened, duration: duration)
+                backupProgress(server: server, itemId: itemId, currentTime: currentTime, listened: listened, duration: duration)
             }
             AppLogger.sync.error("Progress sync failed: \(error.localizedDescription, privacy: .private)")
         }
@@ -439,6 +518,7 @@ private extension PlaybackSessionManager {
         lastSyncedTime = 0
         totalTimeListened = 0
         lastObservedTime = 0
+        lastListeningTick = nil
         isInBackground = false
         isTerminating = false
         isSeeking = false
@@ -486,6 +566,7 @@ extension PlaybackSessionManager {
     func debugSetLastObservedTime(_ time: Double) { lastObservedTime = time }
     func debugResetListenedTime() { totalTimeListened = 0 }
     var debugSessionDuration: Double { sessionDuration }
+    var debugLastSyncedTime: Double { lastSyncedTime }
     var debugActiveTitle: String? { activeTitle }
 
     func debugOverrideAPI(_ api: AudiobookshelfAPI?) { apiOverride = api }
