@@ -11,6 +11,10 @@ struct RemotePlaybackStart {
     let source: PlaybackSource
     let chapters: [ABSChapter]
     let resumePosition: Double
+    /// Whether the resume position is this device's or the server's (newer) one.
+    let resumeSource: ResumePositionResolver.Decision.Source
+    /// When the server's progress was last updated, on this device's clock.
+    let serverUpdatedAt: Date?
     let sessionDuration: Double
 }
 
@@ -35,6 +39,10 @@ final class PlaybackSessionManager: ObservableObject {
     private var activeTitle: String?
     private var activeBookID: UUID?
     private var apiOverride: AudiobookshelfAPI?
+    private var sessionlessTarget: SessionlessTarget?
+    private var sessionlessTimer: Timer?
+    private var lastSessionlessReport: (date: Date, position: Double)?
+    private var isReportingSessionless = false
     private var api: AudiobookshelfAPI { apiOverride ?? .shared }
     private var sessionStartTime: Double = 0
     private var lastSyncedTime: Double = 0
@@ -75,7 +83,30 @@ final class PlaybackSessionManager: ObservableObject {
         player.$loadGeneration
             .removeDuplicates()
             .sink { [weak self] _ in
-                self?.lastListeningTick = nil
+                guard let self else { return }
+                self.lastListeningTick = nil
+                if let target = self.sessionlessTarget, player.currentBookID != target.bookID {
+                    self.endSessionlessReporting()
+                }
+            }
+            .store(in: &cancellables)
+        player.$isPlaying
+            .removeDuplicates()
+            .sink { [weak self] isPlaying in
+                guard let self else { return }
+                if isPlaying {
+                    self.startSessionlessTimer()
+                } else {
+                    self.stopSessionlessTimer()
+                    Task { @MainActor in await self.reportSessionlessProgress(force: true) }
+                }
+            }
+            .store(in: &cancellables)
+        player.$playbackDidReachEnd
+            .removeDuplicates()
+            .filter { $0 }
+            .sink { [weak self] _ in
+                Task { @MainActor in await self?.reportSessionlessProgress(force: true, isFinished: true) }
             }
             .store(in: &cancellables)
         
@@ -139,25 +170,157 @@ final class PlaybackSessionManager: ObservableObject {
         lastObservedTime = newTime
     }
 
+    // MARK: - Progress for downloaded books
+
+    private struct SessionlessTarget {
+        let bookID: UUID
+        let itemId: String
+        let serverURL: String
+        let duration: Double
+    }
+
+    /// Downloaded remote books play without an Audiobookshelf session; their
+    /// progress is sent with `PATCH /api/me/progress` instead, while playing
+    /// (every 30 s) and when playback pauses, ends or the app goes to the
+    /// background. It keeps working after the player screen is closed.
+    func beginSessionlessReporting(bookID: UUID, itemId: String, serverURL: String, duration: Double) {
+        sessionlessTarget = SessionlessTarget(bookID: bookID, itemId: itemId, serverURL: serverURL, duration: duration)
+        lastSessionlessReport = nil
+        if AudioPlayerService.shared.isPlaying {
+            startSessionlessTimer()
+        }
+    }
+
+    func endSessionlessReporting() {
+        sessionlessTarget = nil
+        lastSessionlessReport = nil
+        stopSessionlessTimer()
+    }
+
+    /// Sends the position of the downloaded book being played, when it has
+    /// changed here and the file covers the whole book. `force` skips the
+    /// 30-second throttle; `isFinished` marks the book finished.
+    func reportSessionlessProgress(force: Bool, isFinished: Bool = false) async {
+        guard let target = sessionlessTarget, !isReportingSessionless else { return }
+        let player = AudioPlayerService.shared
+        guard player.currentBookID == target.bookID,
+              player.currentSource?.isLocal == true,
+              player.currentSource?.coversWholeBook == true,
+              activeRemoteItemId != target.itemId else { return }
+        let tracker = PlaybackProgressTracker.shared
+        guard isFinished || tracker.isDirty(bookID: target.bookID) else { return }
+        let position = player.currentTime
+        guard position.isFinite else { return }
+        if !force, !isFinished, let last = lastSessionlessReport,
+           Date().timeIntervalSince(last.date) < AudiobookshelfDefaults.progressSyncInterval || abs(position - last.position) < 1 {
+            return
+        }
+
+        isReportingSessionless = true
+        defer { isReportingSessionless = false }
+        let changedAt = tracker.lastChange(bookID: target.bookID)
+        let backup = {
+            ProgressBackupStore.shared.backup(
+                serverURL: target.serverURL,
+                itemId: target.itemId,
+                currentTime: position,
+                timeListened: 0,
+                duration: target.duration,
+                changedAt: changedAt
+            )
+        }
+        guard NetworkMonitor.shared.isConnected,
+              let token = await AudiobookshelfAuth.shared.token(for: target.serverURL) else {
+            backup()
+            return
+        }
+        do {
+            try await api.updateProgress(
+                baseURL: target.serverURL,
+                token: token,
+                itemId: target.itemId,
+                currentTime: position,
+                duration: target.duration,
+                isFinished: isFinished ? true : nil
+            )
+            lastSessionlessReport = (Date(), position)
+            tracker.markSynced(bookID: target.bookID, through: changedAt)
+            ProgressBackupStore.shared.clear(serverURL: target.serverURL, itemId: target.itemId)
+            AppLogger.sync.debug("Reported downloaded-book progress: \(position)s")
+        } catch {
+            AppLogger.sync.error("Failed to report downloaded-book progress: \(error.localizedDescription, privacy: .private)")
+            backup()
+        }
+    }
+
+    private func startSessionlessTimer() {
+        guard sessionlessTarget != nil, sessionlessTimer == nil else { return }
+        sessionlessTimer = Timer.scheduledTimer(withTimeInterval: AudiobookshelfDefaults.progressSyncInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.reportSessionlessProgress(force: false)
+            }
+        }
+    }
+
+    private func stopSessionlessTimer() {
+        sessionlessTimer?.invalidate()
+        sessionlessTimer = nil
+    }
+
     func isCurrentSession(for book: Book) -> Bool {
         guard book.isRemote, let itemId = book.remoteItemId, let serverId = book.serverId else { return false }
         return currentItemId == itemId && currentServer?.id == serverId
     }
     
-    func startSession(for book: Book, server: ABSServer) async throws -> RemotePlaybackStart {
+    /// Opens a play session and decides where to resume: this device's
+    /// position (`localPosition`, or the book's saved one) or the server's,
+    /// whichever is newer.
+    func startSession(for book: Book, server: ABSServer, localPosition: Double? = nil) async throws -> RemotePlaybackStart {
         guard let itemId = book.remoteItemId else { throw APIError.noActiveSession }
         let bookID = book.id
         let title = book.title
-        let resumePosition = book.lastPlaybackPosition
+        let tracker = PlaybackProgressTracker.shared
+        let local = ResumePositionResolver.Local(
+            position: localPosition ?? book.lastPlaybackPosition,
+            changedAt: tracker.lastChange(bookID: bookID),
+            isDirty: tracker.isDirty(bookID: bookID)
+        )
         
         await closeCurrentSession()
-        await ProgressBackupStore.shared.attemptRecovery(server: server, itemId: itemId)
-        
-        let (session, source) = try await openSession(server: server, itemId: itemId, bookID: bookID)
+
+        // Ask for the server's progress while the session opens.
+        let snapshotTask = Task { @MainActor in await self.fetchProgressSnapshot(server: server, itemId: itemId) }
+        let session: ABSPlaybackSession
+        let source: PlaybackSource
+        do {
+            (session, source) = try await openSession(server: server, itemId: itemId, bookID: bookID)
+        } catch {
+            snapshotTask.cancel()
+            throw error
+        }
+        let fetched = await snapshotTask.value
+        await ProgressBackupStore.shared.attemptRecovery(server: server, itemId: itemId, serverProgress: fetched)
+        let serverProgress: ServerProgressSnapshot?
+        switch fetched {
+        case .some(let snapshot):
+            serverProgress = snapshot
+        case .none:
+            // The progress couldn't be fetched, but the session still reports
+            // the server's position (without a timestamp).
+            serverProgress = session.currentTime.map {
+                ServerProgressSnapshot(currentTime: $0, duration: nil, isFinished: false, lastUpdate: nil, serverClockOffset: nil)
+            }
+        }
+        let decision = ResumePositionResolver.resolve(
+            local: local,
+            server: serverProgress,
+            timelineDuration: source.timeline.duration
+        )
+
         // Sync the length of the files actually played; the item duration can
         // include files the server excludes from playback.
         let sessionDuration = source.timeline.duration
-        let startTime = source.timeline.clamp(resumePosition)
+        let startTime = decision.position
         configureSessionState(session: session, server: server, itemId: itemId,
                               duration: sessionDuration, startTime: startTime)
         activeTitle = title
@@ -168,8 +331,22 @@ final class PlaybackSessionManager: ObservableObject {
             source: source,
             chapters: session.chapters ?? [],
             resumePosition: startTime,
+            resumeSource: decision.source,
+            serverUpdatedAt: serverProgress?.lastUpdateOnDeviceClock,
             sessionDuration: sessionDuration
         )
+    }
+
+    /// The server's progress for an item: `.some(nil)` when it has none,
+    /// nil when it couldn't be fetched.
+    func fetchProgressSnapshot(server: ABSServer, itemId: String) async -> ServerProgressSnapshot?? {
+        guard let token = await AudiobookshelfAuth.shared.token(for: server.normalizedURL) else { return nil }
+        do {
+            return .some(try await api.fetchProgressSnapshot(baseURL: server.normalizedURL, token: token, itemId: itemId))
+        } catch {
+            AppLogger.sync.debug("Couldn't fetch server progress: \(error.localizedDescription, privacy: .private)")
+            return nil
+        }
     }
     
     func closeCurrentSession() async {
@@ -181,6 +358,7 @@ final class PlaybackSessionManager: ObservableObject {
         let duration = sessionDuration
         let hasUpdate = hasUnsyncedProgress(currentTime: currentTime, listened: listened)
         let bookID = activeBookID
+        let changedAt = bookID.flatMap { PlaybackProgressTracker.shared.lastChange(bookID: $0) }
         
         guard let token = await AudiobookshelfAuth.shared.token(for: server.normalizedURL) else {
             if hasUpdate {
@@ -194,7 +372,7 @@ final class PlaybackSessionManager: ObservableObject {
             if hasUpdate {
                 try await api.closeSession(baseURL: server.normalizedURL, token: token, sessionId: sessionId, currentTime: currentTime, timeListened: listened, duration: duration)
                 ProgressBackupStore.shared.clear(serverURL: server.normalizedURL, itemId: itemId)
-                if let bookID { PlaybackProgressTracker.shared.markSynced(bookID: bookID) }
+                if let bookID { PlaybackProgressTracker.shared.markSynced(bookID: bookID, through: changedAt) }
             } else {
                 // Nothing changed here: don't report a position that could
                 // overwrite progress made on another device meanwhile.
@@ -240,6 +418,11 @@ final class PlaybackSessionManager: ObservableObject {
 private extension PlaybackSessionManager {
     func handleAppDidEnterBackground() {
         PlaybackProgressTracker.shared.flush()
+        if sessionlessTarget != nil {
+            performBackgroundSyncTask(named: "StoryCast.DownloadedProgressSync") { [weak self] in
+                await self?.reportSessionlessProgress(force: true)
+            }
+        }
         guard activeSessionId != nil else { return }
         isInBackground = true
         performBackgroundSyncTask(named: "StoryCast.ProgressSync") { [weak self] in
@@ -430,6 +613,7 @@ private extension PlaybackSessionManager {
         let currentTime = AudioPlayerService.shared.currentTime
         let listened = totalTimeListened
         let duration = sessionDuration
+        let changedAt = activeBookID.flatMap { PlaybackProgressTracker.shared.lastChange(bookID: $0) }
         
         if requireUnsyncedProgress {
             guard listened > 0 || abs(currentTime - lastSyncedTime) >= progressBackupEpsilon else { return }
@@ -458,7 +642,7 @@ private extension PlaybackSessionManager {
                 ProgressBackupStore.shared.clear(serverURL: server.normalizedURL, itemId: itemId)
             }
             if let bookID = activeBookID {
-                PlaybackProgressTracker.shared.markSynced(bookID: bookID)
+                PlaybackProgressTracker.shared.markSynced(bookID: bookID, through: changedAt)
             }
             AppLogger.sync.debug("Synced progress: \(currentTime)s (listened \(listened)s)")
         } catch {
@@ -566,6 +750,7 @@ extension PlaybackSessionManager {
     func debugSetLastObservedTime(_ time: Double) { lastObservedTime = time }
     func debugResetListenedTime() { totalTimeListened = 0 }
     var debugSessionDuration: Double { sessionDuration }
+    var debugHasSessionlessTarget: Bool { sessionlessTarget != nil }
     var debugLastSyncedTime: Double { lastSyncedTime }
     var debugActiveTitle: String? { activeTitle }
 
@@ -573,6 +758,7 @@ extension PlaybackSessionManager {
     func debugResetSession() {
         stopAllTimers()
         clearSession()
+        endSessionlessReporting()
     }
     func debugClearSeeking() {
         isSeekingClearTask?.cancel()

@@ -36,7 +36,20 @@ final class ProgressBackupStore {
         UserDefaults.standard.removeObject(forKey: key)
     }
     
-    func attemptRecovery(server: ABSServer, itemId: String) async {
+    /// Position and change time of the progress backed up for an item.
+    func pendingProgress(serverURL: String, itemId: String) -> (position: Double, changedAt: Date)? {
+        let key = pendingProgressKey(serverURL: serverURL, itemId: itemId)
+        guard let backup = UserDefaults.standard.dictionary(forKey: key),
+              let currentTime = backup["currentTime"] as? Double,
+              let timestamp = backup["timestamp"] as? Double else { return nil }
+        return (currentTime, Date(timeIntervalSince1970: timestamp))
+    }
+
+    /// Sends backed-up progress to the server, unless the server has newer
+    /// progress (from another device), in which case the backup is dropped.
+    /// Pass `serverProgress` when it was already fetched; otherwise it is
+    /// fetched here, and nothing is sent if that fails.
+    func attemptRecovery(server: ABSServer, itemId: String, serverProgress: ServerProgressSnapshot?? = nil) async {
         let key = pendingProgressKey(serverURL: server.normalizedURL, itemId: itemId)
         guard let backup = UserDefaults.standard.dictionary(forKey: key),
               let currentTime = backup["currentTime"] as? Double,
@@ -45,6 +58,29 @@ final class ProgressBackupStore {
         }
         
         guard let token = await AudiobookshelfAuth.shared.token(for: server.normalizedURL) else {
+            return
+        }
+
+        let snapshot: ServerProgressSnapshot?
+        if let serverProgress {
+            snapshot = serverProgress
+        } else {
+            do {
+                snapshot = try await api.fetchProgressSnapshot(baseURL: server.normalizedURL, token: token, itemId: itemId)
+            } catch {
+                AppLogger.sync.debug("Couldn't check server progress before recovery: \(error.localizedDescription, privacy: .private)")
+                return
+            }
+        }
+        let changedAt = (backup["timestamp"] as? Double).map { Date(timeIntervalSince1970: $0) }
+        let decision = ResumePositionResolver.resolve(
+            local: .init(position: currentTime, changedAt: changedAt, isDirty: true),
+            server: snapshot,
+            timelineDuration: duration
+        )
+        guard decision.source == .local else {
+            clear(serverURL: server.normalizedURL, itemId: itemId)
+            AppLogger.sync.info("Dropped backed-up progress; the server has newer progress")
             return
         }
         

@@ -148,6 +148,29 @@ actor AudiobookshelfAPI {
         return try decode(ABSMediaProgress.self, from: data)
     }
 
+    /// The server's current progress for an item, with the server's clock
+    /// offset from the response's `Date` header. Nil when there is none yet.
+    func fetchProgressSnapshot(baseURL: String, token: String, itemId: String) async throws -> ServerProgressSnapshot? {
+        let url = try makeURL(base: baseURL, path: "/api/me/progress/\(itemId)")
+        var request = authorizedRequest(url: url, token: token)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, response) = try await performRequest(request)
+        let receivedAt = Date()
+        if let http = response as? HTTPURLResponse, http.statusCode == 404 { return nil }
+        try await validateResponse(response, data: data, request: request)
+        let progress = try decode(ABSMediaProgress.self, from: data)
+        let serverDate = (response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Date")
+            .flatMap(ResumePositionResolver.parseHTTPDate)
+        return ServerProgressSnapshot(
+            currentTime: progress.currentTime ?? 0,
+            duration: progress.duration,
+            isFinished: progress.isFinished ?? false,
+            lastUpdate: progress.lastUpdate.map { Date(timeIntervalSince1970: $0 / 1000) },
+            serverClockOffset: serverDate.map { $0.timeIntervalSince(receivedAt) }
+        )
+    }
+
     /// Pass `isFinished: nil` unless the book was finished: the server resets a
     /// finished book to the start when it receives `isFinished: false`.
     func updateProgress(baseURL: String, token: String, itemId: String, currentTime: Double, duration: Double, isFinished: Bool?) async throws {

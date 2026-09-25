@@ -152,7 +152,8 @@ nonisolated final class ProgressSyncSafetyTests: XCTestCase {
     func testRecoveryOmitsIsFinishedForUnfinishedBook() async throws {
         let server = ABSServer(name: "Test", url: serverURL, username: "root")
         let itemID = "item-recovery"
-        ABSStubURLProtocol.stub(path: "/api/me/progress/\(itemID)", body: Data("{}".utf8))
+        ABSStubURLProtocol.stub(path: "/api/me/progress/\(itemID)", method: "GET", status: 404, body: Data())
+        ABSStubURLProtocol.stub(path: "/api/me/progress/\(itemID)", method: "PATCH", body: Data("{}".utf8))
         ProgressBackupStore.shared.debugBackup(serverURL: serverURL, itemId: itemID, currentTime: 120, timeListened: 30, duration: 283)
         defer { ProgressBackupStore.shared.debugClear(serverURL: serverURL, itemId: itemID) }
 
@@ -169,7 +170,8 @@ nonisolated final class ProgressSyncSafetyTests: XCTestCase {
     func testRecoveryMarksFinishedBookFinished() async throws {
         let server = ABSServer(name: "Test", url: serverURL, username: "root")
         let itemID = "item-recovery-finished"
-        ABSStubURLProtocol.stub(path: "/api/me/progress/\(itemID)", body: Data("{}".utf8))
+        ABSStubURLProtocol.stub(path: "/api/me/progress/\(itemID)", method: "GET", status: 404, body: Data())
+        ABSStubURLProtocol.stub(path: "/api/me/progress/\(itemID)", method: "PATCH", body: Data("{}".utf8))
         ProgressBackupStore.shared.debugBackup(serverURL: serverURL, itemId: itemID, currentTime: 280, timeListened: 30, duration: 283)
         defer { ProgressBackupStore.shared.debugClear(serverURL: serverURL, itemId: itemID) }
 
