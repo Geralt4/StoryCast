@@ -20,6 +20,8 @@ struct PlayerView: View {
     @State private var showSleepTimer = false
     @State private var showChapterList = false
     @State private var sliderValue = 0.0
+    /// The chapter the bar covered when a drag began, so the scale holds while dragging.
+    @State private var dragProgress: ChapterProgress?
     @State private var isUserDraggingSlider = false
 
     init(book: Book) {
@@ -52,10 +54,15 @@ struct PlayerView: View {
                         isUserDraggingSlider: $isUserDraggingSlider,
                         safeDuration: viewModel.safeDuration,
                         currentTime: audioPlayer.currentTime,
+                        progress: isUserDraggingSlider ? dragProgress : viewModel.chapterProgress(at: audioPlayer.currentTime),
+                        bookRemaining: max(0, viewModel.safeDuration - audioPlayer.currentTime),
                         chapterTitleForTime: { time in
                             viewModel.chapterAt(time: time)?.title
                         },
                         onEditingChanged: { editing in
+                            if editing {
+                                dragProgress = viewModel.chapterProgress(at: audioPlayer.currentTime)
+                            }
                             isUserDraggingSlider = editing
                             viewModel.sliderValueForSeek = sliderValue
                             viewModel.handleSliderEditingChanged(editing)

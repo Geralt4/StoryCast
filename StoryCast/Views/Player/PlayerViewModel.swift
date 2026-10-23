@@ -378,6 +378,13 @@ final class PlayerViewModel {
         binarySearchChapter(at: time)
     }
 
+    /// The span of the chapter at `time`, for the chapter-length progress bar.
+    /// Nil when the book has no usable chapters.
+    func chapterProgress(at time: Double) -> ChapterProgress? {
+        let specs = cachedSortedChapters.map { ChapterSpec(title: $0.title, start: $0.startTime, end: $0.endTime) }
+        return ChapterProgress.make(at: time, chapters: specs, totalDuration: safeDuration)
+    }
+
     // MARK: - Private Helpers
 
     private func skipSymbolName(for seconds: Int, baseName: String) -> String {
@@ -772,7 +779,7 @@ final class PlayerViewModel {
         }
         guard audioPlayer.isPlaying else { return }
         guard !isUserDragging else { return }
-        guard var session = chapterPlaybackSession else { return }
+        guard var session = chapterPlaybackSession ?? implicitChapterSession(at: currentTime) else { return }
 
         if let lockUntil = chapterTransitionLockUntil {
             if lockUntil > Date() {
@@ -828,7 +835,31 @@ final class PlayerViewModel {
         audioPlayer.seek(to: currentBoundary.endTime)
         audioPlayer.pause()
         persistPlaybackPosition(currentBoundary.endTime, errorMessage: "Couldn't save playback position.")
-        clearChapterPlaybackSession()
+        // A seek can land just before the chapter end. Park the session on the
+        // next chapter so pressing play continues into it instead of tripping
+        // this same end-of-chapter check again.
+        if session.boundaries.indices.contains(session.currentIndex + 1) {
+            session.currentIndex += 1
+            chapterPlaybackSession = session
+            chapterTransitionLockUntil = nil
+        } else {
+            clearChapterPlaybackSession()
+        }
+    }
+
+    /// A chapter session for normal playback, so playback stops at, or continues
+    /// past, each chapter end the same way as when a chapter was picked from
+    /// the list. The last chapter has none: the end of the book takes over there.
+    private func implicitChapterSession(at time: Double) -> ChapterPlaybackSession? {
+        let chapters = sortedChapters
+        guard chapters.count > 1,
+              let current = binarySearchChapter(at: time),
+              let index = chapters.firstIndex(where: { $0 === current }),
+              index < chapters.count - 1 else { return nil }
+        let boundaries = chapters.map {
+            ChapterBoundary(title: $0.title, startTime: $0.startTime, endTime: $0.endTime)
+        }
+        return ChapterPlaybackSession(boundaries: boundaries, currentIndex: index)
     }
 
     // MARK: - Chapter Metadata Helpers
