@@ -127,8 +127,9 @@ nonisolated final class ServerRemovalServiceTests: XCTestCase {
         let context = ModelContext(container)
         let server = ABSServer(name: "Test Server", url: "https://example.com", username: "tester")
         context.insert(server)
+        let serverFolder = try FolderService.resolveServerFolder(serverId: server.id, name: server.name, in: context)
         context.insert(Book(
-            title: "Remote Book", duration: 100,
+            title: "Remote Book", duration: 100, folder: serverFolder,
             isRemote: true, serverId: server.id
         ))
         let journal = ServerRemovalJournalEntry(
@@ -178,6 +179,9 @@ nonisolated final class ServerRemovalServiceTests: XCTestCase {
 
         let books = try ModelContext(container).fetch(FetchDescriptor<Book>())
         XCTAssertTrue(books.isEmpty)
+
+        let folders = try ModelContext(container).fetch(FetchDescriptor<Folder>())
+        XCTAssertFalse(folders.contains { $0.id == server.id }, "The server's folder must be removed with it")
     }
 
     private func makeInMemoryContainer() throws -> ModelContainer {

@@ -187,56 +187,6 @@ nonisolated final class BugFixTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: key)
     }
 
-    // MARK: - Bug 7: enqueue() cancels existing task before replacing
-
-    @MainActor
-    func testEnqueueCancelsPreviousTaskForSameBookId() {
-        let coordinator = RemoteLibraryUICoverArtCoordinator.shared
-        coordinator.debugResetState()
-
-        let bookId = UUID()
-
-        let firstTask = Task<Void, Never> {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
-        coordinator.debugRegisterTask(firstTask, for: bookId)
-        XCTAssertEqual(coordinator.debugTaskCount, 1)
-        XCTAssertFalse(firstTask.isCancelled, "First task should not yet be cancelled")
-
-        let secondTask = Task<Void, Never> {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
-        coordinator.debugRegisterTask(secondTask, for: bookId)
-
-        XCTAssertEqual(coordinator.debugTaskCount, 1, "Should still be only one tracked task per bookId")
-
-        coordinator.cancelAllCoverArtDownloads()
-        XCTAssertTrue(secondTask.isCancelled)
-    }
-
-    @MainActor
-    func testEnqueueTracksNewTaskAfterCancellingOld() {
-        let coordinator = RemoteLibraryUICoverArtCoordinator.shared
-        coordinator.debugResetState()
-
-        let bookIdA = UUID()
-        let bookIdB = UUID()
-
-        let taskA = Task<Void, Never> { while !Task.isCancelled { try? await Task.sleep(nanoseconds: 1_000_000_000) } }
-        let taskB = Task<Void, Never> { while !Task.isCancelled { try? await Task.sleep(nanoseconds: 1_000_000_000) } }
-
-        coordinator.debugRegisterTask(taskA, for: bookIdA)
-        coordinator.debugRegisterTask(taskB, for: bookIdB)
-        XCTAssertEqual(coordinator.debugTaskCount, 2)
-
-        coordinator.cancelAllCoverArtDownloads()
-        XCTAssertEqual(coordinator.debugTaskCount, 0)
-    }
-
     // MARK: - Bug 9: SleepTimer fires on paused playback
 
     @MainActor
@@ -292,28 +242,6 @@ nonisolated final class BugFixTests: XCTestCase {
         let isMismatch = StorageVersionValidator.isVersionMismatchError(migrationOnlyError)
         XCTAssertFalse(isMismatch,
                        "'migration' alone should not trigger isVersionMismatchError after removing it from versionMismatchKeywords")
-    }
-
-    // MARK: - Bug 11: tasks.removeValue in non-isolated Task (Swift 6 safety)
-
-    @MainActor
-    func testCoverArtTaskRemovedAfterCancellation() {
-        let coordinator = RemoteLibraryUICoverArtCoordinator.shared
-        coordinator.debugResetState()
-
-        let bookId = UUID()
-        let task = Task<Void, Never> {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-            }
-        }
-
-        coordinator.debugRegisterTask(task, for: bookId)
-        XCTAssertEqual(coordinator.debugTaskCount, 1)
-
-        coordinator.cancelAllCoverArtDownloads()
-        XCTAssertEqual(coordinator.debugTaskCount, 0, "Task should be removed after cancellation")
-        XCTAssertTrue(task.isCancelled)
     }
 
     // MARK: - Bug 12: Thread.sleep removed from AppBootstrap

@@ -523,6 +523,27 @@ final class SyncFoundationTests: XCTestCase {
         XCTAssertEqual(secondPlan.operationCount, 0)
     }
 
+    func testPlannerSkipsAudiobookshelfServerFolders() throws {
+        let container = try makeContainer()
+        let context = ModelContext(container)
+        let server = ABSServer(name: "Home", url: "https://example.com", username: "tester")
+        context.insert(server)
+        let serverFolder = try FolderService.resolveServerFolder(serverId: server.id, name: "Home", in: context)
+        let userFolder = Folder(name: "Fiction", isSystem: false, sortOrder: 1)
+        context.insert(userFolder)
+        context.insert(Book(title: "Streamed", duration: 60, folder: serverFolder, isRemote: true, serverId: server.id))
+        try context.save()
+
+        _ = try SyncOutboxPlanner.plan(container: container, deviceID: "device-a")
+
+        let operations = try context.fetch(FetchDescriptor<SyncOutboxOperation>())
+        let folderSubjects = operations
+            .filter { $0.subjectKindRaw == SyncEntityKind.folder.rawValue }
+            .map(\.subjectID)
+        XCTAssertEqual(folderSubjects, [SyncRecordName.folder(userFolder.id)])
+        XCTAssertFalse(folderSubjects.contains(SyncRecordName.folder(serverFolder.id)))
+    }
+
     func testPlannerDoesNotLetUnplayedBookProgressOverrideRealProgress() throws {
         let container = try makeContainer()
         let context = ModelContext(container)

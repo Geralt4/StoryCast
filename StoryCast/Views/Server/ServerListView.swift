@@ -63,7 +63,7 @@ struct ServerListView: View {
         ContentUnavailableView {
             Label("No Servers", systemImage: "server.rack")
         } description: {
-            Text("Add your Audiobookshelf server to stream your audiobook library.")
+            Text("Add your Audiobookshelf server. Its books appear in your Library and stream from there.")
         } actions: {
             Button("Add Server") { showAddServer = true }
                 .buttonStyle(.borderedProminent)

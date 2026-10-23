@@ -330,26 +330,6 @@ nonisolated final class BugFixRegressionTests: XCTestCase {
     }
 
     @MainActor
-    func testCoverArtRetryTasksAreTrackedAndCancellable() {
-        let coordinator = RemoteLibraryUICoverArtCoordinator.shared
-        coordinator.debugResetState()
-        
-        let bookId = UUID()
-        let longRunningTask = Task<Void, Never> {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
-        
-        coordinator.debugRegisterTask(longRunningTask, for: bookId)
-        XCTAssertEqual(coordinator.debugTaskCount, 1, "Task should be tracked")
-        
-        coordinator.cancelAllCoverArtDownloads()
-        XCTAssertEqual(coordinator.debugTaskCount, 0, "Task should be removed after cancellation")
-        XCTAssertTrue(longRunningTask.isCancelled, "Task should be cancelled")
-    }
-
-    @MainActor
     func testABSServerSnapshotExtractsValuesCorrectly() {
         let server = ABSServer(
             name: "Test Server",

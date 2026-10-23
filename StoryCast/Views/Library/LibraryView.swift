@@ -6,6 +6,7 @@ struct LibraryView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Folder.sortOrder) private var folders: [Folder]
     @Query(sort: \Book.title) private var allBooks: [Book]
+    @Query private var servers: [ABSServer]
     @EnvironmentObject private var importService: ImportService
     @State private var searchHandler = LibrarySearchHandler()
     @State private var importHandler = LibraryImportHandler()
@@ -30,7 +31,10 @@ struct LibraryView: View {
     private var unfiledFolder: Folder? { folders.first { $0.isSystem } }
     private var userFolders: [Folder] { folders.filter { !$0.isSystem } }
     private var hasAnyContent: Bool { !allBooks.isEmpty || !userFolders.isEmpty }
-    private var selectableFolderIds: Set<UUID> { Set(userFolders.map { $0.id }) }
+    /// Folders owned by an Audiobookshelf server. They are managed by sync, so they cannot be deleted, merged or used as move targets.
+    private var serverFolderIds: Set<UUID> { Set(servers.map(\.id)) }
+    private var manualFolders: [Folder] { folders.filter { !serverFolderIds.contains($0.id) } }
+    private var selectableFolderIds: Set<UUID> { Set(userFolders.filter { !serverFolderIds.contains($0.id) }.map { $0.id }) }
     private var isAllSelected: Bool { !selectableFolderIds.isEmpty && coordinator.selectedFolderIds.isSuperset(of: selectableFolderIds) }
     private var filteredFolders: [Folder] { searchHandler.getFilteredFolders(allFolders: folders) }
     private var filteredBooks: [Book] { searchHandler.getFilteredBooks(allBooks: allBooks) }
@@ -53,7 +57,7 @@ struct LibraryView: View {
             .sheet(isPresented: $coordinator.showSettings) { SettingsView().preferredColorScheme(sheetColorScheme) }
             .sheet(isPresented: $coordinator.showNewFolderSheet) { NewFolderSheet(onSave: { _ = folderOperations.createFolder(name: $0) }) }
             .sheet(isPresented: $coordinator.showFolderSelection) {
-                FolderSelectionSheet(folders: folders, selectedFolder: $coordinator.selectedFolderForImport, onSave: {
+                FolderSelectionSheet(folders: manualFolders, selectedFolder: $coordinator.selectedFolderForImport, onSave: {
                     if let folder = coordinator.selectedFolderForImport {
                         importHandler.importFiles(coordinator.pendingImportURLs, to: folder, importService: importService, modelContext: modelContext)
                     }
@@ -91,7 +95,7 @@ struct LibraryView: View {
             } message: { Text("This will move all books in this folder to Unfiled. Continue?") }
             .overlay { if importService.isImporting { ImportProgressOverlay(importService: importService) { importHandler.cancelImport(importService: importService) } } }
             .sheet(isPresented: $coordinator.showBulkMoveSheet) {
-                BulkMoveFoldersSheet(folderIds: coordinator.selectedFolderIds, folders: folders, onSave: { targetFolder in
+                BulkMoveFoldersSheet(folderIds: coordinator.selectedFolderIds, folders: manualFolders, onSave: { targetFolder in
                     moveFolders(coordinator.selectedFolderIds, into: targetFolder)
                     coordinator.selectedFolderIds.removeAll(); coordinator.showBulkMoveSheet = false
                 }, onCancel: { coordinator.showBulkMoveSheet = false })
@@ -103,12 +107,12 @@ struct LibraryView: View {
                 }, onCancel: { coordinator.showBulkDeleteSheet = false })
             }
             .sheet(item: $coordinator.folderToMerge) { folder in
-                MergeFolderSheet(sourceFolder: folder, folders: folders, onSave: { targetFolder in
+                MergeFolderSheet(sourceFolder: folder, folders: manualFolders, onSave: { targetFolder in
                     mergeFolder(folder, into: targetFolder); coordinator.folderToMerge = nil
                 }, onCancel: { coordinator.folderToMerge = nil })
             }
             .sheet(item: $coordinator.searchBookToMove) { book in
-                MoveToFolderSheet(book: book, folders: folders, onSave: { targetFolder in
+                MoveToFolderSheet(book: book, folders: manualFolders, onSave: { targetFolder in
                     do { try bookActions.moveBook(book, to: targetFolder); coordinator.finishSearchBookMove() }
                     catch { presentLibraryError("Failed to move book", error: error) }
                 }, onCancel: { coordinator.finishSearchBookMove() })
@@ -246,7 +250,7 @@ struct LibraryView: View {
     }
 
     private func folderRowView(_ folder: Folder) -> some View {
-        FolderRowView(folder: folder, isEditing: isEditing, isSelected: coordinator.selectedFolderIds.contains(folder.id),
+        FolderRowView(folder: folder, isServerManaged: serverFolderIds.contains(folder.id), isEditing: isEditing, isSelected: coordinator.selectedFolderIds.contains(folder.id),
             onSelect: { coordinator.selectFolder(folder) }, onRename: { coordinator.beginFolderRename(folder) },
             onDelete: { coordinator.beginFolderDeletion(folder) }, onMove: { coordinator.folderToMerge = folder })
     }

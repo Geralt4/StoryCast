@@ -2,14 +2,23 @@ import SwiftUI
 import SwiftData
 
 /// Shows details for a single Audiobookshelf server and lets the user
-/// browse its libraries and trigger a sync.
+/// trigger a sync. The server's books live in the main Library, in a folder
+/// named after the server, and play in the main player.
 struct ServerDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @ObservedObject private var remoteLibrary = RemoteLibraryService.shared
 
     let server: ABSServer
 
-    @State private var selectedLibraryId: String?
+    init(server: ABSServer) {
+        self.server = server
+        let serverId = server.id
+        _serverBooks = Query(filter: #Predicate<Book> { $0.serverId == serverId })
+    }
+
+    @Query private var serverBooks: [Book]
+    @State private var isSyncing = false
+    @State private var syncErrorMessage: String?
     @State private var showEditServer = false
     @State private var isActivating = false
     @State private var needsLogin = false
@@ -18,6 +27,7 @@ struct ServerDetailView: View {
         List {
             serverInfoSection
             librarySection
+            syncSection
         }
         .navigationTitle(server.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -78,16 +88,51 @@ struct ServerDetailView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(remoteLibrary.libraries) { library in
-                    NavigationLink(destination: RemoteLibraryView(server: server, library: library)) {
-                        HStack {
-                            Image(systemName: "books.vertical")
-                                .foregroundStyle(Color.accentColor)
-                            Text(library.name)
+                    HStack {
+                        Image(systemName: "books.vertical")
+                            .foregroundStyle(Color.accentColor)
+                        Text(library.name)
+                        Spacer()
+                        if library.mediaType == "book" {
+                            Text("\(bookCount(in: library))")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Not supported")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
             }
         }
+    }
+
+    private var syncSection: some View {
+        Section {
+            Button {
+                Task { await syncNow() }
+            } label: {
+                HStack {
+                    Text("Sync Now")
+                    if isSyncing {
+                        Spacer()
+                        ProgressView()
+                    }
+                }
+            }
+            .disabled(isSyncing || isActivating)
+            if let syncErrorMessage {
+                Label(syncErrorMessage, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .font(.callout)
+            }
+        } footer: {
+            Text("Synced books appear in your Library, in a folder for this server.")
+        }
+    }
+
+    private func bookCount(in library: ABSLibrary) -> Int {
+        serverBooks.filter { $0.remoteLibraryId == library.id }.count
     }
 
     // MARK: - Logic
@@ -107,6 +152,20 @@ struct ServerDetailView: View {
             return
         }
         await remoteLibrary.fetchLibraries()
+    }
+
+    private func syncNow() async {
+        isSyncing = true
+        syncErrorMessage = nil
+        defer { isSyncing = false }
+
+        let result = await RemoteLibrarySyncEngine.syncServer(for: server.snapshot(), container: modelContext.container)
+        switch result.outcome {
+        case .synced: break
+        case .skippedNoToken: needsLogin = true
+        case .skippedNoLibraries: syncErrorMessage = "This server has no book libraries."
+        case .failed(let message): syncErrorMessage = message
+        }
     }
 }
 

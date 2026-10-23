@@ -149,28 +149,20 @@ nonisolated final class RemoteCleanupSafetyTests: XCTestCase {
                 try? await Task.sleep(nanoseconds: 5_000_000)
             }
         }
-        let coverArtTask = Task<Void, Never> {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 5_000_000)
-            }
-        }
         let backgroundCoverArtTask = Task<Void, Never> {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 5_000_000)
             }
         }
         DownloadManager.shared.debugRegisterTrackedDownload(bookId: book.id, timeoutTask: timeoutTask)
-        RemoteLibraryService.shared.debugRegisterCoverArtTask(coverArtTask, for: book.id)
         await BackgroundRemoteCoverArtService.shared.debugRegisterTask(backgroundCoverArtTask, for: book.id)
 
         try await RemoteLibraryService.shared.removeRemoteBooks(for: server.snapshot(), container: container)
         let backgroundTaskCount = await BackgroundRemoteCoverArtService.shared.debugTaskCount()
 
         XCTAssertEqual(DownloadManager.shared.debugDownloadCount, 0)
-        XCTAssertEqual(RemoteLibraryService.shared.debugCoverArtTaskCount, 0)
         XCTAssertEqual(backgroundTaskCount, 0)
         XCTAssertTrue(timeoutTask.isCancelled)
-        XCTAssertTrue(coverArtTask.isCancelled)
         XCTAssertTrue(backgroundCoverArtTask.isCancelled)
     }
 

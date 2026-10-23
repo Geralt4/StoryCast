@@ -2,12 +2,16 @@ import SwiftUI
 
 struct FolderRowView: View {
     let folder: Folder
+    /// Folder filled by an Audiobookshelf server: it can be renamed but not selected, merged or deleted.
+    let isServerManaged: Bool
     let isEditing: Bool
     let isSelected: Bool
     let onSelect: () -> Void
     let onRename: () -> Void
     let onDelete: () -> Void
     let onMove: () -> Void
+
+    private var isLocked: Bool { folder.isSystem || isServerManaged }
 
     private var folderAccessibilityValue: String {
         let countLabel = folder.bookCount == 1 ? "1 book" : "\(folder.bookCount) books"
@@ -17,7 +21,7 @@ struct FolderRowView: View {
     }
 
     private var folderAccessibilityHint: String {
-        if folder.isSystem {
+        if isLocked {
             return "Double tap to open folder"
         }
         if isEditing {
@@ -49,7 +53,7 @@ struct FolderRowView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .disabled(folder.isSystem)
+                .disabled(isLocked)
             } else {
                 NavigationLink(value: folder) {
                     HStack {
@@ -69,22 +73,24 @@ struct FolderRowView: View {
         .accessibilityValue(folderAccessibilityValue)
         .accessibilityHint(folderAccessibilityHint)
         .accessibilityAction(named: Text(folderSelectionActionName)) {
-            guard !folder.isSystem else { return }
+            guard !isLocked else { return }
             HapticManager.impact(.light)
             onSelect()
         }
         .contextMenu(folder.isSystem ? nil : ContextMenu {
-            Button(action: {
-                HapticManager.impact(.light)
-                onSelect()
-            }) {
-                Label("Select", systemImage: "checkmark.circle")
-            }
-            Button(action: {
-                HapticManager.impact(.light)
-                onMove()
-            }) {
-                Label("Merge", systemImage: "folder")
+            if !isServerManaged {
+                Button(action: {
+                    HapticManager.impact(.light)
+                    onSelect()
+                }) {
+                    Label("Select", systemImage: "checkmark.circle")
+                }
+                Button(action: {
+                    HapticManager.impact(.light)
+                    onMove()
+                }) {
+                    Label("Merge", systemImage: "folder")
+                }
             }
             Button(action: {
                 HapticManager.impact(.light)
@@ -92,12 +98,14 @@ struct FolderRowView: View {
             }) {
                 Label("Rename", systemImage: "pencil")
             }
-            Button(role: .destructive, action: {
-                HapticManager.impact(.heavy)
-                HapticManager.notification(.error)
-                onDelete()
-            }) {
-                Label("Delete", systemImage: "trash")
+            if !isServerManaged {
+                Button(role: .destructive, action: {
+                    HapticManager.impact(.heavy)
+                    HapticManager.notification(.error)
+                    onDelete()
+                }) {
+                    Label("Delete", systemImage: "trash")
+                }
             }
         })
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
@@ -112,7 +120,7 @@ struct FolderRowView: View {
             }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if !isEditing && !folder.isSystem {
+            if !isEditing && !isLocked {
                 Button(role: .destructive, action: {
                     HapticManager.impact(.heavy)
                     HapticManager.notification(.error)

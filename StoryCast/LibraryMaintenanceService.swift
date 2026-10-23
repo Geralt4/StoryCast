@@ -73,9 +73,9 @@ enum LibraryMaintenanceService {
         let snapshots = servers.map { $0.snapshot() }
         AppLogger.network.info("Starting sync for \(snapshots.count) Audiobookshelf server(s)")
         for snapshot in snapshots {
-            let result = await RemoteLibrarySyncEngine.syncPreferredLibrary(for: snapshot, container: container)
+            let result = await RemoteLibrarySyncEngine.syncServer(for: snapshot, container: container)
             switch result.outcome {
-            case .synced(_, let libraryName): AppLogger.network.info("Synced library '\(libraryName)' from server '\(snapshot.name)'")
+            case .synced(let libraryNames): AppLogger.network.info("Synced \(libraryNames.count) library(ies) from server '\(snapshot.name)'")
             case .skippedNoToken: AppLogger.network.warning("Token invalid for server \(snapshot.name)")
             case .skippedNoLibraries: AppLogger.network.info("No libraries available to sync for server '\(snapshot.name)'")
             case .failed(let message): AppLogger.network.error("Remote sync failed for server '\(snapshot.name)': \(message)")
