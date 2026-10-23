@@ -166,3 +166,29 @@ A GO verdict is **conditional** on CloudKit Production schema confirmation (Phas
 - Submitting to TestFlight / App Store Connect (via Xcode Organizer → Distribute App, or Transporter)
 - Updating `CHANGELOG` or additional release notes
 - Cleaning up the unused `SyncLocalMutation` model
+
+---
+
+# StoryCast 1.5 (build 15) — Update Checklist
+
+Changes in 1.5 (PR #2): Audiobookshelf books in the main Library (one folder per server), chapter-scoped progress bar,
+chapter name under the title. Release notes: `release_notes/v1.5.txt`. Version bumped to **1.5 (15)** in all build configs.
+
+## What did not change
+- **CloudKit schema:** no new record types or fields. Server folders are excluded from iCloud sync in `SyncOutboxPlanner`, so no new Production schema deployment is needed.
+- **SwiftData schema:** still `SchemaV6`. A server's folder reuses the server's UUID as its `Folder.id`, so there is no migration.
+
+## Before archiving
+1. Merge PR #2 into `main` and pull; the working tree must be clean.
+2. Full unit test suite passes (Phase 6 command above).
+3. Device check (iPad/iPhone via Xcode) — the items not covered by unit tests:
+   - Auto-play on: the chapter bar rolls into the next chapter with no gap.
+   - Auto-play off: playback stops at the chapter end, and Play continues into the next chapter.
+   - Upgrade from the 1.4 App Store build with a server already connected: books move from Unfiled into the server folder and keep their positions.
+   - Add a server: its folder appears without relaunching. Remove the server: the folder is removed.
+
+## Archive and upload
+Same commands as Phase 5 (`xcodebuild archive`, then `-exportArchive`). Remove the previous `build/StoryCast.xcarchive` and `build/StoryCast.ipa` first. Then choose the build in App Store Connect and paste `release_notes/v1.5.txt` into "What's New in This Version".
+
+## Still a separate ask
+Tagging the release, pushing tags, and submitting for review.
