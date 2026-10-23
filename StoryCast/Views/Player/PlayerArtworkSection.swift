@@ -35,20 +35,9 @@ struct PlayerArtworkSection: View {
                             )
                         )
 
-                    VStack(spacing: 12) {
-                        Image(systemName: "book.closed.fill")
-                            .font(.system(size: LayoutDefaults.bookIconSize))
-                            .foregroundColor(.accentColor.opacity(ColorDefaults.iconOpacity))
-
-                        if let currentChapterTitle {
-                            Text(currentChapterTitle)
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal, LayoutDefaults.contentPadding)
-                        }
-                    }
+                    Image(systemName: "book.closed.fill")
+                        .font(.system(size: LayoutDefaults.bookIconSize))
+                        .foregroundColor(.accentColor.opacity(ColorDefaults.iconOpacity))
                 }
             }
             .frame(width: artworkSize, height: artworkSize)
@@ -62,6 +51,17 @@ struct PlayerArtworkSection: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, LayoutDefaults.horizontalPadding)
                 .accessibilityLabel("Title: \(title)")
+
+            // Shown for every book, with or without cover art.
+            if let currentChapterTitle {
+                Text(currentChapterTitle)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, LayoutDefaults.horizontalPadding)
+                    .accessibilityLabel("Current chapter: \(currentChapterTitle)")
+            }
 
             if isSleepTimerActive {
                 Button(action: onSleepTimerTap) {
