@@ -47,6 +47,11 @@ struct ServerRemovalService {
                 for book in books {
                     try LibraryDeletionTransaction.stageBookDeletion(book, deviceID: nil, in: context)
                 }
+                // The server's folder shares its id; it is not synced, so no tombstone.
+                let folderDescriptor = FetchDescriptor<Folder>(predicate: #Predicate { $0.id == serverId })
+                for folder in try context.fetch(folderDescriptor) {
+                    context.delete(folder)
+                }
                 let journalDescriptor = FetchDescriptor<ServerRemovalJournalEntry>(
                     predicate: #Predicate { $0.serverID == serverId }
                 )
@@ -110,7 +115,6 @@ struct ServerRemovalService {
                 predicate: #Predicate { $0.serverId == serverID }
             ))
             let bookIds = Set(books.map(\.id))
-            RemoteLibraryService.shared.cancelCoverArtDownloads(for: bookIds)
             await BackgroundRemoteCoverArtService.shared.cancelTasks(for: bookIds)
             DownloadManager.shared.cancelDownloads(for: bookIds)
         } catch {

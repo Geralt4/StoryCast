@@ -177,7 +177,7 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         context.insert(server)
         try context.save()
 
-        let tokenValid = await RemoteLibrarySyncEngine.syncPreferredLibrary(
+        let tokenValid = await RemoteLibrarySyncEngine.syncServer(
             for: server.snapshot(),
             container: container,
             validateServerAccess: { _, container in
@@ -265,18 +265,15 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         )
 
         switch tokenValid.outcome {
-        case .synced(let libraryId, let libraryName):
-            XCTAssertEqual(libraryId, "library-1")
-            XCTAssertEqual(libraryName, "Main Library")
+        case .synced(let libraryNames):
+            XCTAssertEqual(libraryNames, ["Main Library"])
         default:
             return XCTFail("Expected startup remote sync to succeed")
         }
 
         XCTAssertNil(RemoteLibraryService.shared.activeServer)
         XCTAssertTrue(RemoteLibraryService.shared.libraries.isEmpty)
-        XCTAssertTrue(RemoteLibraryService.shared.remoteItems.isEmpty)
         XCTAssertNil(RemoteLibraryService.shared.error)
-        XCTAssertTrue(RemoteLibraryService.shared.coverArtFailures.isEmpty)
         let backgroundTaskCountAfterMetadataSync = await BackgroundRemoteCoverArtService.shared.debugTaskCount()
         XCTAssertEqual(backgroundTaskCountAfterMetadataSync, 0)
 
@@ -306,7 +303,7 @@ nonisolated final class StartupStabilityTests: XCTestCase {
         context.insert(server)
         try context.save()
 
-        let result = await RemoteLibrarySyncEngine.syncPreferredLibrary(
+        let result = await RemoteLibrarySyncEngine.syncServer(
             for: server.snapshot(),
             container: container,
             validateServerAccess: { _, container in
@@ -393,7 +390,6 @@ nonisolated final class StartupStabilityTests: XCTestCase {
             return XCTFail("Expected sync to succeed")
         }
 
-        XCTAssertTrue(RemoteLibraryService.shared.coverArtFailures.isEmpty)
         let queuedBackgroundTaskCount = await BackgroundRemoteCoverArtService.shared.debugTaskCount()
         XCTAssertEqual(queuedBackgroundTaskCount, 1)
 

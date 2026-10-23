@@ -5,9 +5,16 @@ struct FolderDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var importService: ImportService
     @Query(sort: \Folder.sortOrder) private var allFolders: [Folder]
+    @Query private var servers: [ABSServer]
     @Query private var folderBooks: [Book]
 
     let folder: Folder
+
+    /// Audiobookshelf server folders are filled by sync, not by manual moves.
+    private var moveTargetFolders: [Folder] {
+        let serverIds = Set(servers.map(\.id))
+        return allFolders.filter { !serverIds.contains($0.id) }
+    }
 
     @State private var searchHandler = FolderBookSearchHandler()
     @State private var importHandler = LibraryImportHandler()
@@ -179,7 +186,7 @@ struct FolderDetailView: View {
         .sheet(item: $coordinator.selectedBook) { book in
             MoveToFolderSheet(
                 book: book,
-                folders: allFolders,
+                folders: moveTargetFolders,
                 onSave: { targetFolder in
                     do {
                         try bookActions.moveBook(book, to: targetFolder)
@@ -196,7 +203,7 @@ struct FolderDetailView: View {
         .sheet(isPresented: $coordinator.showBulkMoveToFolder) {
             BulkMoveToFolderSheet(
                 bookIds: coordinator.selectedBookIds,
-                folders: allFolders,
+                folders: moveTargetFolders,
                 currentFolder: folder,
                 onSave: { targetFolder in
                     do {

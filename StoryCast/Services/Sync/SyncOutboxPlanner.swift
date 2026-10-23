@@ -62,7 +62,10 @@ enum SyncOutboxPlanner {
         let generationDependencies = dependencyIfPending(generationOperation)
 
         var folderOperations: [UUID: SyncOutboxOperation] = [:]
-        for folder in allFolders where !folder.isSystem {
+        // Audiobookshelf server folders are rebuilt by each device's own server
+        // sync; uploading them would create duplicates on other devices.
+        let serverFolderIDs = FolderService.serverFolderIDs(in: context)
+        for folder in allFolders where !folder.isSystem && !serverFolderIDs.contains(folder.id) {
             let folderID = folder.id
             let stateID = "folder:\(folderID.uuidString.lowercased())"
             let state = statesByID[stateID] ?? makeState(

@@ -16,7 +16,7 @@ struct RemoteLibraryPageSyncResult {
 
 struct RemoteLibraryServerSyncResult: Sendable {
     enum Outcome: Sendable {
-        case synced(libraryId: String, libraryName: String)
+        case synced(libraryNames: [String])
         case skippedNoToken
         case skippedNoLibraries
         case failed(message: String)
@@ -76,49 +76,8 @@ enum RemoteLibrarySyncEngine {
         return RemoteLibraryPageSyncResult(response: response, coverArtRequests: coverArtRequests)
     }
 
-    static func syncPreferredLibrary(for server: ABSServerSnapshot, container: ModelContainer) async -> RemoteLibraryServerSyncResult {
-        do {
-            let tokenValid = try await validateServerAccess(for: server, container: container)
-            guard tokenValid else {
-                return RemoteLibraryServerSyncResult(outcome: .skippedNoToken)
-            }
-
-            let libraries = try await fetchLibraries(for: server)
-            guard !libraries.isEmpty else {
-                return RemoteLibraryServerSyncResult(outcome: .skippedNoLibraries)
-            }
-
-            let preferredLibrary = libraries.first(where: { $0.id == server.defaultLibraryId }) ?? libraries[0]
-            var page = 0
-            var fetchedCount = 0
-
-            while true {
-                let result = try await fetchAndMergeLibraryPage(
-                    for: server,
-                    libraryId: preferredLibrary.id,
-                    page: page,
-                    container: container
-                )
-                await BackgroundRemoteCoverArtService.shared.enqueue(requests: result.coverArtRequests, container: container)
-                fetchedCount += result.response.results.count
-
-                if result.response.results.isEmpty || fetchedCount >= result.response.total {
-                    break
-                }
-
-                page += 1
-            }
-
-            try persistLastSyncDate(forServerId: server.id, container: container)
-            return RemoteLibraryServerSyncResult(
-                outcome: .synced(libraryId: preferredLibrary.id, libraryName: preferredLibrary.name)
-            )
-        } catch {
-            return RemoteLibraryServerSyncResult(outcome: .failed(message: error.localizedDescription))
-        }
-    }
-
-    private static func mergeIntoStore(
+    /// Internal (not private) so tests can merge fixture items without network or Keychain.
+    static func mergeIntoStore(
         items: [ABSLibraryItem],
         server: ABSServerSnapshot,
         container: ModelContainer
@@ -142,7 +101,7 @@ enum RemoteLibrarySyncEngine {
                 existingByRemoteId[remoteItemId] = book
             }
         }
-        let unfiledFolder = try FolderService.resolveUnfiledFolder(in: context)
+        let serverFolder = try FolderService.resolveServerFolder(serverId: serverId, name: persistedServer.name, in: context)
 
         var insertCount = 0
         var updateCount = 0
@@ -156,13 +115,18 @@ enum RemoteLibrarySyncEngine {
                 existing.duration = duration
                 existing.lastSyncDate = Date()
                 existing.updateSearchFields()
+                // Move books out of Unfiled (or a missing folder) once, but keep
+                // any folder the user chose themselves.
+                if existing.folder == nil || existing.folder?.isSystem == true {
+                    existing.folder = serverFolder
+                }
                 updateCount += 1
             } else {
                 let book = Book(
                     title: item.title,
                     author: item.authorName,
                     duration: duration,
-                    folder: unfiledFolder,
+                    folder: serverFolder,
                     isRemote: true,
                     remoteItemId: item.id,
                     remoteLibraryId: item.libraryId,
@@ -218,16 +182,27 @@ enum RemoteLibrarySyncEngine {
         }
     }
 
-#if DEBUG
-    @MainActor
-    static func syncPreferredLibrary(
+    /// Syncs every book library on the server into the local store. Each book
+    /// lands in the server's own folder (see `FolderService.resolveServerFolder`).
+    /// The steps are injectable so tests can drive the real loop without network or Keychain.
+    static func syncServer(
         for server: ABSServerSnapshot,
         container: ModelContainer,
-        validateServerAccess: @escaping @Sendable (ABSServerSnapshot, ModelContainer) async throws -> Bool,
-        fetchLibraries: @escaping @Sendable (ABSServerSnapshot) async throws -> [ABSLibrary],
-        fetchAndMergeLibraryPage: @escaping @Sendable (ABSServerSnapshot, String, Int, ModelContainer) async throws -> RemoteLibraryPageSyncResult,
-        enqueueCoverArtRequests: @escaping @Sendable ([RemoteCoverArtRequest], ModelContainer) async -> Void,
-        persistLastSyncDate: @escaping @Sendable (UUID, ModelContainer) throws -> Void
+        validateServerAccess: @escaping @Sendable (ABSServerSnapshot, ModelContainer) async throws -> Bool = { server, container in
+            try await RemoteLibrarySyncEngine.validateServerAccess(for: server, container: container)
+        },
+        fetchLibraries: @escaping @Sendable (ABSServerSnapshot) async throws -> [ABSLibrary] = { server in
+            try await RemoteLibrarySyncEngine.fetchLibraries(for: server)
+        },
+        fetchAndMergeLibraryPage: @escaping @Sendable (ABSServerSnapshot, String, Int, ModelContainer) async throws -> RemoteLibraryPageSyncResult = { server, libraryId, page, container in
+            try await RemoteLibrarySyncEngine.fetchAndMergeLibraryPage(for: server, libraryId: libraryId, page: page, container: container)
+        },
+        enqueueCoverArtRequests: @escaping @Sendable ([RemoteCoverArtRequest], ModelContainer) async -> Void = { requests, container in
+            await BackgroundRemoteCoverArtService.shared.enqueue(requests: requests, container: container)
+        },
+        persistLastSyncDate: @escaping @Sendable (UUID, ModelContainer) async throws -> Void = { serverId, container in
+            try await MainActor.run { try RemoteLibrarySyncEngine.persistLastSyncDate(forServerId: serverId, container: container) }
+        }
     ) async -> RemoteLibraryServerSyncResult {
         do {
             let tokenValid = try await validateServerAccess(server, container)
@@ -235,32 +210,32 @@ enum RemoteLibrarySyncEngine {
                 return RemoteLibraryServerSyncResult(outcome: .skippedNoToken)
             }
 
-            let libraries = try await fetchLibraries(server)
+            let libraries = try await fetchLibraries(server).filter { $0.mediaType == "book" }
             guard !libraries.isEmpty else {
                 return RemoteLibraryServerSyncResult(outcome: .skippedNoLibraries)
             }
 
-            let preferredLibrary = libraries.first(where: { $0.id == server.defaultLibraryId }) ?? libraries[0]
-            var page = 0
-            var fetchedCount = 0
+            for library in libraries {
+                var page = 0
+                var fetchedCount = 0
 
-            while true {
-                let result = try await fetchAndMergeLibraryPage(server, preferredLibrary.id, page, container)
-                await enqueueCoverArtRequests(result.coverArtRequests, container)
-                fetchedCount += result.response.results.count
+                while true {
+                    let result = try await fetchAndMergeLibraryPage(server, library.id, page, container)
+                    await enqueueCoverArtRequests(result.coverArtRequests, container)
+                    fetchedCount += result.response.results.count
 
-                if result.response.results.isEmpty || fetchedCount >= result.response.total {
-                    break
+                    if result.response.results.isEmpty || fetchedCount >= result.response.total {
+                        break
+                    }
+
+                    page += 1
                 }
-
-                page += 1
             }
 
-            try persistLastSyncDate(server.id, container)
-            return RemoteLibraryServerSyncResult(outcome: .synced(libraryId: preferredLibrary.id, libraryName: preferredLibrary.name))
+            try await persistLastSyncDate(server.id, container)
+            return RemoteLibraryServerSyncResult(outcome: .synced(libraryNames: libraries.map(\.name)))
         } catch {
             return RemoteLibraryServerSyncResult(outcome: .failed(message: error.localizedDescription))
         }
     }
-#endif
 }

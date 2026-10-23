@@ -165,7 +165,9 @@ struct ServerSetupView: View {
             }
 
             // 4. Persist the server in SwiftData.
+            let savedServer: ABSServer
             if let existing = existingServer {
+                savedServer = existing
                 // If URL changed, delete the old token from Keychain only if the new token was saved
                 if existing.normalizedURL != normalizedURL && tokenSaved {
                     do {
@@ -192,8 +194,15 @@ struct ServerSetupView: View {
                     isActive: true
                 )
                 modelContext.insert(server)
+                savedServer = server
             }
             try modelContext.save()
+
+            // Pull the server's books into the Library right away. The task is
+            // independent of this sheet, which dismisses below.
+            let snapshot = savedServer.snapshot()
+            let container = modelContext.container
+            Task { _ = await RemoteLibrarySyncEngine.syncServer(for: snapshot, container: container) }
 
             connectionState = .success
             HapticManager.impact(.medium)

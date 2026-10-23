@@ -3,39 +3,22 @@ import SwiftData
 import Combine
 import os
 
-/// Fetches and caches the remote Audiobookshelf library for a given server.
-/// Merges remote items into the local SwiftData store as `Book` records with
-/// `source == .remote`, so they appear alongside local books in the library.
+/// Tracks the active Audiobookshelf server and its library list for the Settings screens, and removes a server's books. Syncing books into the Library is done by `RemoteLibrarySyncEngine`.
 @MainActor
 final class RemoteLibraryService: ObservableObject {
     static let shared = RemoteLibraryService()
-    private let uiCoverArtCoordinator: RemoteLibraryUICoverArtCoordinator
 
     // MARK: - Published State
 
     @Published private(set) var libraries: [ABSLibrary] = []
-    @Published private(set) var remoteItems: [ABSLibraryItem] = []
-    @Published private(set) var isLoading: Bool = false
     @Published private(set) var error: Error?
     @Published private(set) var activeServer: ABSServer?
-    /// Books whose cover art download has failed, keyed by compound key `serverId_bookId`.
-    @Published private(set) var coverArtFailures: [String: CoverArtFailure] = [:]
 
     // MARK: - Private
 
-    private var currentPage: Int = 0
-    private var totalItems: Int = 0
-    private var selectedLibraryId: String?
     private var currentActivationId: UUID?
 
-    private init() {
-        let uiCoverArtCoordinator = RemoteLibraryUICoverArtCoordinator.shared
-        self.uiCoverArtCoordinator = uiCoverArtCoordinator
-        self.coverArtFailures = uiCoverArtCoordinator.failures
-        self.uiCoverArtCoordinator.onFailuresChanged = { [weak self] failures in
-            self?.coverArtFailures = failures
-        }
-    }
+    private init() {}
 
     // MARK: - Server Activation
 
@@ -79,9 +62,7 @@ final class RemoteLibraryService: ObservableObject {
             return
         }
 
-        isLoading = true
         error = nil
-        defer { isLoading = false }
 
         do {
             libraries = try await RemoteLibrarySyncEngine.fetchLibraries(for: server.snapshot())
@@ -92,67 +73,7 @@ final class RemoteLibraryService: ObservableObject {
         }
     }
 
-    /// Fetches the first page of items from the given library and resets pagination.
-    func fetchItems(libraryId: String, container: ModelContainer) async {
-        selectedLibraryId = libraryId
-        currentPage = 0
-        remoteItems = []
-        await loadNextPage(container: container)
-    }
-
-    /// Loads the next page of items (for infinite scroll / pull-to-refresh).
-    func loadNextPage(container: ModelContainer) async {
-        guard let server = activeServer,
-              let libraryId = selectedLibraryId else { return }
-
-        // Don't load beyond the total.
-        if currentPage > 0 && remoteItems.count >= totalItems { return }
-
-        isLoading = true
-        error = nil
-        defer { isLoading = false }
-
-        do {
-            let pageResult = try await RemoteLibrarySyncEngine.fetchAndMergeLibraryPage(
-                for: server.snapshot(),
-                libraryId: libraryId,
-                page: currentPage,
-                container: container
-            )
-            let response = pageResult.response
-            totalItems = response.total
-            remoteItems.append(contentsOf: response.results)
-            currentPage += 1
-            enqueueCoverArtDownloads(pageResult.coverArtRequests, container: container)
-
-            AppLogger.network.info("Fetched page \(self.currentPage - 1): \(response.results.count) items (total \(response.total))")
-        } catch {
-            self.error = error
-            AppLogger.network.error("Failed to fetch library items: \(error.localizedDescription, privacy: .private)")
-        }
-    }
-
-    private func enqueueCoverArtDownloads(_ requests: [RemoteCoverArtRequest], container: ModelContainer) {
-        uiCoverArtCoordinator.enqueue(requests: requests, container: container)
-    }
-
-    func retryCoverArtDownload(for bookId: UUID, container: ModelContainer) {
-        uiCoverArtCoordinator.retryCoverArtDownload(for: bookId, activeServer: activeServer, container: container)
-    }
-
-    func retryAllCoverArtDownloads(container: ModelContainer) {
-        uiCoverArtCoordinator.retryAllCoverArtDownloads(activeServer: activeServer, container: container)
-    }
-
     // MARK: - Cleanup
-
-    func cancelAllCoverArtDownloads() {
-        uiCoverArtCoordinator.cancelAllCoverArtDownloads()
-    }
-
-    func cancelCoverArtDownloads(for bookIds: Set<UUID>) {
-        uiCoverArtCoordinator.cancelCoverArtDownloads(for: bookIds)
-    }
 
     enum RemoteBookRemovalError: LocalizedError {
         case cleanupFailed(underlying: Error)
@@ -176,7 +97,6 @@ final class RemoteLibraryService: ObservableObject {
             let books = try context.fetch(descriptor)
             let bookIds = Set(books.map(\.id))
 
-            cancelCoverArtDownloads(for: bookIds)
             await BackgroundRemoteCoverArtService.shared.cancelTasks(for: bookIds)
             DownloadManager.shared.cancelDownloads(for: bookIds)
 
@@ -196,24 +116,15 @@ final class RemoteLibraryService: ObservableObject {
         if activeServer?.id == snapshot.id {
             activeServer = nil
             libraries = []
-            remoteItems = []
         }
     }
 
 #if DEBUG
-    var debugCoverArtTaskCount: Int { uiCoverArtCoordinator.debugTaskCount }
-
     func debugResetUIState() {
         activeServer = nil
         libraries = []
-        remoteItems = []
         error = nil
-        coverArtFailures.removeAll()
-        currentPage = 0
-        totalItems = 0
-        selectedLibraryId = nil
         currentActivationId = nil
-        cancelAllCoverArtDownloads()
         Task {
             await BackgroundRemoteCoverArtService.shared.debugResetState()
         }
@@ -221,26 +132,6 @@ final class RemoteLibraryService: ObservableObject {
 
     func debugSetActiveServer(_ server: ABSServer?) {
         activeServer = server
-    }
-
-    func debugRecordCoverArtFailure(
-        bookId: UUID,
-        serverId: UUID,
-        itemId: String,
-        retryCount: Int = 1,
-        error: Error = NSError(domain: "RemoteLibraryServiceTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "Injected cover art failure"])
-    ) {
-        uiCoverArtCoordinator.debugRecordFailure(
-            bookId: bookId,
-            serverId: serverId,
-            itemId: itemId,
-            retryCount: retryCount,
-            error: error
-        )
-    }
-
-    func debugRegisterCoverArtTask(_ task: Task<Void, Never>, for bookId: UUID) {
-        uiCoverArtCoordinator.debugRegisterTask(task, for: bookId)
     }
 #endif
 }
