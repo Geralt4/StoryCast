@@ -1,6 +1,0 @@
-What's New in 1.5
-• Audiobookshelf books now appear right in your Library, in a folder named after your server, and play in the main player — no more separate player inside Settings
-• Every book library on your Audiobookshelf server is included, and a Sync Now button in Settings refreshes it on demand
-• The progress bar now follows the current chapter, with the time left in the chapter and in the book, and playback moves on to the next chapter automatically (you can turn this off in Settings)
-• The current chapter's name now shows under the book title, even when a book has cover art
-• Stability and reliability improvements

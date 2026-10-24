@@ -169,10 +169,10 @@ A GO verdict is **conditional** on CloudKit Production schema confirmation (Phas
 
 ---
 
-# StoryCast 1.5 (build 15) — Update Checklist
+# StoryCast 1.4.1 (build 15) — Update Checklist
 
-Changes in 1.5 (PR #2): Audiobookshelf books in the main Library (one folder per server), chapter-scoped progress bar,
-chapter name under the title. Release notes: `release_notes/v1.5.txt`. Version bumped to **1.5 (15)** in all build configs.
+Changes in 1.4.1 (PR #2): Audiobookshelf books in the main Library (one folder per server), chapter-scoped progress bar,
+chapter name under the title. Release notes: `release_notes/v1.4.1.txt`. Version bumped to **1.4.1 (15)** in all build configs.
 
 ## What did not change
 - **CloudKit schema:** no new record types or fields. Server folders are excluded from iCloud sync in `SyncOutboxPlanner`, so no new Production schema deployment is needed.
@@ -188,7 +188,7 @@ chapter name under the title. Release notes: `release_notes/v1.5.txt`. Version b
    - Add a server: its folder appears without relaunching. Remove the server: the folder is removed.
 
 ## Archive and upload
-Same commands as Phase 5 (`xcodebuild archive`, then `-exportArchive`). Remove the previous `build/StoryCast.xcarchive` and `build/StoryCast.ipa` first. Then choose the build in App Store Connect and paste `release_notes/v1.5.txt` into "What's New in This Version".
+Same commands as Phase 5 (`xcodebuild archive`, then `-exportArchive`). Remove the previous `build/StoryCast.xcarchive` and `build/StoryCast.ipa` first. Then choose the build in App Store Connect and paste `release_notes/v1.4.1.txt` into "What's New in This Version".
 
 ## Still a separate ask
 Tagging the release, pushing tags, and submitting for review.
